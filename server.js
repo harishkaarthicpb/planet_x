@@ -1,16 +1,19 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const { handleObservationRequest } = require('./spherex-observations');
 
 const port = Number(process.env.PORT ?? 8000);
 const routes = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/index.html': ['index.html', 'text/html; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
-  '/script.js': ['script.js', 'text/javascript; charset=utf-8']
+  '/script.js': ['script.js', 'text/javascript; charset=utf-8'],
+  '/sky-region.mjs': ['sky-region.mjs', 'text/javascript; charset=utf-8']
 };
 
-const server = http.createServer((request, response) => {
+const server = http.createServer(async (request, response) => {
+  if (await handleObservationRequest(request, response)) return;
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     response.writeHead(405, { Allow: 'GET, HEAD' });
     response.end('Method not allowed');

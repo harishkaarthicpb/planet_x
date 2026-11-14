@@ -2,20 +2,76 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Planet X — a new project.">
-    <title>Planet X</title>
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1">
+    <meta name="description" content="Explore SPHEREx and Gaia DR3 sky imagery, one layer at a time.">
+    <title>Planet X — Sky</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="style.css">
-    <script src="script.js" defer></script>
+    <script src="script.js" type="module"></script>
   </head>
   <body>
-    <main>
-      <p class="eyebrow">WELCOME TO</p>
-      <h1>Planet X</h1>
-      <p>A new project starts here.</p>
-      <button id="start-button" type="button">Get started</button>
-      <p id="status" role="status" aria-live="polite"></p>
-    </main>
+    <main id="sky-map" aria-label="SPHEREx infrared sky map"></main>
+    <section id="region-view" aria-label="Locked observation comparison" hidden>
+      <div id="region-map"></div>
+    </section>
+    <details id="coordinate-panel" open>
+      <summary>Sky coordinate search</summary>
+      <form id="coordinate-search" novalidate>
+        <fieldset id="coordinate-fields" disabled>
+          <legend class="sr-only">Equatorial sky coordinates in degrees</legend>
+          <div class="coordinate-row">
+            <label for="right-ascension">Right Ascension (°)
+              <input id="right-ascension" name="ra" type="number" step="any"
+                min="0" max="360" required value="60.8109955" aria-describedby="coordinate-error">
+            </label>
+            <label for="declination">Declination (°)
+              <input id="declination" name="dec" type="number" step="any"
+                min="-90" max="90" required value="51.3404038" aria-describedby="coordinate-error">
+            </label>
+          </div>
+          <label for="field-of-view">Field of view
+            <select id="field-of-view" name="fov">
+              <option value="0.1">0.1° (6 arcmin)</option>
+              <option value="0.5">0.5° (30 arcmin)</option>
+              <option value="1">1°</option>
+              <option value="3">3°</option>
+              <option value="10">10°</option>
+              <option value="30">30°</option>
+              <option value="75" selected>75°</option>
+              <option value="110">110°</option>
+            </select>
+          </label>
+          <div class="coordinate-footer">
+            <small>Equatorial · ICRS</small>
+            <button type="submit">Explore coordinates</button>
+          </div>
+        </fieldset>
+        <p id="coordinate-error" role="alert" hidden></p>
+        <p id="coordinate-result" role="status" aria-live="polite"></p>
+        <button id="marker-toggle" type="button" aria-pressed="true" hidden>Hide marker</button>
+      </form>
+      <section id="region-panel" aria-label="Select a region for two dated observations">
+        <h2>Compare a region</h2>
+        <button id="draw-region" type="button" disabled>Draw rectangle</button>
+        <button id="clear-region" type="button" hidden>Clear region</button>
+        <p id="region-result" role="status">Zoom in, then drag a rectangle that fits within 1°.</p>
+        <button id="load-observation" type="button" disabled>Load two observations</button>
+        <button id="back-to-sky" type="button" hidden>Back to whole sky</button>
+        <p class="region-note">Two different dates, including partial coverage. Missing areas stay blank. Exposure wavelengths can differ, so appearance changes alone do not establish motion.</p>
+      </section>
+    </details>
+    <p id="status" role="status" aria-live="polite">Loading SPHEREx sky…</p>
+    <p id="preload-progress" role="status" aria-live="polite" hidden></p>
+    <div id="mission-switch" role="group" aria-label="Sky data source">
+      <button type="button" data-mission="spherex" aria-pressed="true" disabled>SPHEREx</button>
+      <button type="button" data-mission="gaia" aria-pressed="false" title="Gaia DR3" disabled>Gaia</button>
+      <button type="button" data-mission="observation-0" aria-pressed="false" disabled>Date 1</button>
+      <button type="button" data-mission="observation-1" aria-pressed="false" disabled>Date 2</button>
+    </div>
+    <div id="cursor-coordinates" aria-label="Cursor coordinates in equatorial ICRS" aria-live="off"
+      title="Sky coordinates under your cursor, in ICRS degrees">RA — · Dec — · ICRS</div>
+    <a id="survey-credit" href="https://irsa.ipac.caltech.edu/Missions/spherex.html"
+      target="_blank" rel="noopener noreferrer">SPHEREx · NASA/Caltech/IPAC</a>
+    <noscript>Enable JavaScript to display the sky map.</noscript>
   </body>
 </html>

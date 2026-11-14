@@ -35,7 +35,7 @@ async function errorResponseDetails(response) {
 }
 
 function logTrace(event) { console.info('[Planet X archive]', JSON.stringify(event)); }
-async function archiveRequest(url, milliseconds, stage, read, {requestId,log=logTrace,fetchOptions={}}={}) {
+async function archiveRequest(url, milliseconds, stage, read, {requestId,log=logTrace,fetchOptions={},acceptedStatuses}={}) {
   const started=performance.now();
   const base={requestId,stage,url:safeUrl(url),method:fetchOptions.method || 'GET'};
   log({...base,event:'start',query:fetchOptions.body?.get?.('QUERY')});
@@ -44,7 +44,7 @@ async function archiveRequest(url, milliseconds, stage, read, {requestId,log=log
     const response=await fetch(url,{...fetchOptions,signal:AbortSignal.timeout(milliseconds)});
     status=response.status;
     log({...base,event:'headers',status,elapsedMs:Math.round(performance.now()-started),contentType:response.headers?.get('content-type') || null});
-    if (!response.ok) {
+    if (acceptedStatuses ? !acceptedStatuses.includes(status) : !response.ok) {
       const details=await errorResponseDetails(response);
       log({...base,event:'http-error',status,elapsedMs:Math.round(performance.now()-started),...details});
       throw new Error(`HTTP ${status}`);
@@ -59,7 +59,10 @@ async function archiveRequest(url, milliseconds, stage, read, {requestId,log=log
     const timeout=error.name==='TimeoutError' || error.name==='AbortError';
     const message=timeout ? `${stage} timed out after ${milliseconds/1000} seconds. Please retry.` : `${stage} failed: ${error.message}`;
     log({...base,event:'error',status,elapsedMs:Math.round(performance.now()-started),exception:{name:error.name,message:error.message,cause:error.cause?.message,code:error.cause?.code}});
-    throw new Error(message,{cause:error});
+    const failure=new Error(message,{cause:error});
+    failure.httpStatus=status;
+    failure.requestStage=stage;
+    throw failure;
   }
 }
 module.exports={safeUrl,logTrace,archiveRequest,errorResponseDetails};

@@ -50,14 +50,14 @@
         <p id="coordinate-result" role="status" aria-live="polite"></p>
         <button id="marker-toggle" type="button" aria-pressed="true" hidden>Hide marker</button>
       </form>
-      <section id="region-panel" aria-label="Select a region for two dated observations">
-        <h2>Compare a region</h2>
+      <section id="region-panel" aria-label="Select a region for one available observation">
+        <h2>Explore a region</h2>
         <button id="draw-region" type="button" disabled>Draw rectangle</button>
         <button id="clear-region" type="button" hidden>Clear region</button>
         <p id="region-result" role="status">Zoom in, then drag a rectangle that fits within 1°.</p>
-        <button id="load-observation" type="button" disabled>Load two observations</button>
+        <button id="load-observation" type="button" disabled>Load one observation</button>
         <button id="back-to-sky" type="button" hidden>Back to whole sky</button>
-        <p class="region-note">Two different dates, including partial coverage. Missing areas stay blank. Exposure wavelengths can differ, so appearance changes alone do not establish motion.</p>
+        <p class="region-note">Loads the first available SPHEREx image overlapping the rectangle. Missing coverage stays blank.</p>
       </section>
     </details>
     <p id="status" role="status" aria-live="polite">Loading SPHEREx sky…</p>
@@ -65,8 +65,7 @@
     <div id="mission-switch" role="group" aria-label="Sky data source">
       <button type="button" data-mission="spherex" aria-pressed="true" disabled>SPHEREx</button>
       <button type="button" data-mission="gaia" aria-pressed="false" title="Gaia DR3" disabled>Gaia</button>
-      <button type="button" data-mission="observation-0" aria-pressed="false" disabled>Date 1</button>
-      <button type="button" data-mission="observation-1" aria-pressed="false" disabled>Date 2</button>
+      <button type="button" data-mission="observation-0" aria-pressed="false" disabled>Observation</button>
     </div>
     <div id="cursor-coordinates" aria-label="Cursor coordinates in equatorial ICRS" aria-live="off"
       title="Sky coordinates under your cursor, in ICRS degrees">RA — · Dec — · ICRS</div>

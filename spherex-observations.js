@@ -2,6 +2,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { archiveRequest, logTrace } = require('./archive-diagnostics');
 const { extractImage } = require('./fits-image');
+const { runAsyncTap } = require('./tap-async');
 
 const ARCHIVE = 'https://irsa.ipac.caltech.edu';
 const WAVELENGTH_METERS = 3.293e-6;
@@ -21,7 +22,15 @@ function number(value) {
     ? Number(value) : NaN;
 }
 
-function exposureRows(payload) {
+function utcDateFromMjd(mjd) {
+  const value=number(mjd);
+  const instant=new Date((value-40587)*86400000);
+  if (!Number.isFinite(value) || !Number.isFinite(instant.getTime())) throw new Error('Invalid observation timestamp.');
+  // MJD already starts at midnight, unlike JD. No half-day shift is needed.
+  return instant.toISOString().slice(0,10);
+}
+
+function exposureRows(payload, {anyBand=false,sortByDate=true}={}) {
   const resources = payload?.VOTABLE?.RESOURCE_ARRAY;
   if (!Array.isArray(resources)) throw new Error('IRSA returned an unexpected query format.');
   const resource = resources.find(item => item.TABLE);
@@ -42,13 +51,13 @@ function exposureRows(payload) {
       const end = number(row.t_max);
       const key = `${row.obs_id}/${row.energy_bandpassname}`;
       const valid = Number.isFinite(start) && start > 0 && Number.isFinite(end) && end >= start &&
-        row.energy_bandpassname === 'SPHEREx-D4' && row.dataproduct_type === 'image' &&
-        number(row.em_min) <= WAVELENGTH_METERS && number(row.em_max) >= WAVELENGTH_METERS &&
+        (anyBand ? /^SPHEREx-D[1-6]$/.test(row.energy_bandpassname) : row.energy_bandpassname === 'SPHEREx-D4') && row.dataproduct_type === 'image' &&
+        (anyBand || (number(row.em_min) <= WAVELENGTH_METERS && number(row.em_max) >= WAVELENGTH_METERS)) &&
         validImageUrl(row.access_url) && !seen.has(key);
       if (valid) seen.add(key);
       return valid;
-    })
-    .sort((a, b) => number(b.t_min) - number(a.t_min));
+    });
+  if (sortByDate) rows.sort((a,b)=>number(b.t_min)-number(a.t_min));
   return rows;
 }
 
@@ -58,7 +67,7 @@ function selectRegionPair(payload) {
   const rows = exposureRows(payload);
   const later = rows[0];
   if (!later) throw new Error('No overlapping SPHEREx detector-4 observations were returned for this rectangle.');
-  const day = row => Math.floor(number(row.t_min)); // UTC days in MJD.
+  const day = row => utcDateFromMjd(row.t_min);
   // Explicit rule: newest two distinct UTC dates returned by the search.
   const earlier = rows.find(row => day(row) !== day(later));
   if (!earlier) throw new Error('The archive search did not return two different observation dates for this rectangle. Try a nearby region.');
@@ -97,7 +106,9 @@ function selectTapPair(payload) {
   const rows=tapRows(payload).filter(row=>validImageUrl(row.access_url) && Number.isFinite(number(row.t_min)))
     .sort((a,b)=>number(b.t_min)-number(a.t_min));
   const later=rows[0];
-  const earlier=rows.find(row=>Math.floor(number(row.t_min))!==Math.floor(number(later?.t_min)));
+  if (!later) throw new Error('TAP returned no usable observations.');
+  const laterDate=utcDateFromMjd(later.t_min);
+  const earlier=rows.find(row=>utcDateFromMjd(row.t_min)!==laterDate);
   if (!later || !earlier) throw new Error('The center-point query did not return observations on two different UTC dates.');
   return [earlier,later];
 }
@@ -105,12 +116,31 @@ function selectTapPair(payload) {
 async function searchObservations(region, {mode='rectangle',requestId=randomUUID(),log=logTrace}={}) {
   const started=performance.now();
   let selected, recordCount, searchLimited;
-  if (mode==='point') {
-    const query=new URL('/TAP/sync',ARCHIVE);
-    const body=new URLSearchParams({REQUEST:'doQuery',LANG:'ADQL',FORMAT:'json',QUERY:buildTapQuery(region)});
-    const payload=await archiveRequest(query,90000,'IRSA observation search',r=>r.json(),{
-      requestId,log,fetchOptions:{method:'POST',body}
-    });
+  if (mode==='single') {
+    // Find one image at the rectangle center, not a ranked/date-separated pair.
+    // A center covered by the footprint guarantees overlap with the rectangle.
+    // Start with one
+    // collection; try DR1 only if QR3 returns no usable records, not on errors.
+    recordCount=0;searchLimited=false;
+    const deadline=performance.now()+90000;
+    const {ra,dec}=region.position;
+    const {footprintContainsRegion}=await import('./sky-region.mjs');
+    for (const collection of ['spherex_qr3','spherex_dr1']) {
+      const query=new URL('/SIA',ARCHIVE);
+      query.searchParams.set('COLLECTION',collection);
+      query.searchParams.set('POS',`CIRCLE ${ra} ${dec} 0.0001`);
+      query.searchParams.set('DPTYPE','image');
+      query.searchParams.set('RESPONSEFORMAT','JSON');query.searchParams.set('MAXREC','1');
+      const payload=await archiveRequest(query,Math.max(1,Math.ceil(deadline-performance.now())),'IRSA single-image search',r=>r.json(),{requestId,log});
+      const resource=payload.VOTABLE?.RESOURCE_ARRAY?.find(r=>r.TABLE);
+      recordCount+=resource?.TABLE.DATA?.TABLEDATA?.length || 0;
+      searchLimited ||= resource?.INFO_ARRAY?.some(i=>i['<xmlattr>']?.value==='OVERFLOW') || false;
+      const first=exposureRows(payload,{anyBand:true,sortByDate:false}).find(row=>footprintContainsRegion(row.s_region,[[ra,dec]]));
+      if (first) {selected=[first];break;}
+    }
+    if (!selected) throw new Error('No SPHEREx FITS image overlapping this rectangle was returned.');
+  } else if (mode==='point') {
+    const payload=await runAsyncTap(buildTapQuery(region),{maxWaitMs:150000,requestId,log});
     recordCount=payload.data?.length || 0;
     selected=selectTapPair(payload);
     searchLimited=recordCount>=MAX_RECORDS;
@@ -195,7 +225,7 @@ async function handleObservationRequest(request, response) {
         return true;
       }
       const mode=url.searchParams.get('mode') || 'rectangle';
-      if (!['rectangle','point'].includes(mode)) { sendJson(response,400,{error:'Unknown observation search mode.'}); return true; }
+      if (!['single','rectangle','point'].includes(mode)) { sendJson(response,400,{error:'Unknown observation search mode.'}); return true; }
       const result=await searchObservations(region,{mode,requestId});
       const size=mode==='point'?0.05:region.sizeDegrees;
       const observations=result.selected.map((row,index)=>{
@@ -207,7 +237,7 @@ async function handleObservationRequest(request, response) {
       while (cutouts.size>64) cutouts.delete(cutouts.keys().next().value);
       sendJson(response,200,{...region,observations,requestId,recordCount:result.recordCount,
         searchLimited:result.searchLimited,mode,cutoutSizeDegrees:size,
-        selectionRule:'newest-two-UTC-dates-returned',coverage:mode==='point'?'center-test':'partial-allowed'});
+        selectionRule:mode==='single'?'first-available-image':'newest-two-UTC-dates-returned',coverage:mode==='point'?'center-test':'partial-allowed'});
     } else if (/^\/api\/spherex\/cutout\/[a-f0-9]{64}$/.test(url.pathname)) {
       const token = url.pathname.split('/').pop();
       const cutout = cutouts.get(token);
@@ -231,4 +261,4 @@ async function handleObservationRequest(request, response) {
   return true;
 }
 
-module.exports = { handleObservationRequest, selectRegionPair, selectTapPair, buildTapQuery, searchObservations, cutoutUrl, downloadCutout, validImageUrl };
+module.exports = { handleObservationRequest, selectRegionPair, selectTapPair, buildTapQuery, searchObservations, cutoutUrl, downloadCutout, validImageUrl, utcDateFromMjd };

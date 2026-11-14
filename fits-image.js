@@ -81,7 +81,10 @@ function extractImage(buffer) {
   const summary = {
     hdus:hdus.map(({index,name,type,axes,dataBytes})=>({index,name,type,axes,dataBytes})),
     image:{index:image.index,name:image.name,axes:image.axes,bitpix:image.header.BITPIX,
-      ctype:[image.header.CTYPE1,image.header.CTYPE2],unit:image.header.BUNIT || null,...imageStatistics(buffer,image)},
+      ctype:[image.header.CTYPE1,image.header.CTYPE2],unit:image.header.BUNIT || null,
+      wcs:Object.fromEntries(Object.entries(image.header).filter(([key]) =>
+        /^(RADESYS|EQUINOX|LONPOLE|LATPOLE|WCSAXES|NAXIS[12]|CTYPE[12]|CUNIT[12]|CRPIX[12]|CRVAL[12]|CDELT[12]|CROTA[12]|(?:CD|PC)[12]_[12]|[AB]P?_(ORDER|\d+_\d+))$/.test(key))),
+      ...imageStatistics(buffer,image)},
     sourceBytes:buffer.length,displayBytes:imageBytes.length
   };
   return {imageBytes,summary};

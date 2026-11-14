@@ -1,0 +1,40 @@
+{
+  "position": {
+    "ra": 60.8109955,
+    "dec": 51.3404038
+  },
+  "sizeDegrees": 0.05,
+  "origin": "Real IRSA QR3 D4 cutouts; IMAGE pixels copied verbatim. Diagnostic fixtures, not a live discovery response.",
+  "observations": [
+    {
+      "id": "2026W35_1A_0259_1",
+      "observedStart": "2026-08-25T07:03:31.518Z",
+      "band": "SPHEREx-D4",
+      "filename": "2026-08-25-image.fits",
+      "sourceUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/qr3/level2/2026W35_1A/l2b-v27-2026-243/4/level2_2026W35_1A_0259_1D4_spx_l2b-v27-2026-243.fits?center=60.8109955%2C51.3404038&size=.05&gzip=false",
+      "rawSha256": "5795fadcfa98d6fa1e9117e9c6ae5d32926a73328395d2e7c737bdeab7fb59c7",
+      "imageFileSha256": "5aab50dfd43d0e06e50eee21ec746c0e89a4baea0ab723a7ff1637770f6e2556",
+      "pixelSha256": "9a67ae4ea6a23e7bbd7a2ec65a99651068715e47c59546b1435845ceb02cc13e",
+      "axes": [
+        29,
+        29
+      ],
+      "finitePixels": 839
+    },
+    {
+      "id": "2026W36_1A_0557_1",
+      "observedStart": "2026-09-02T10:36:30.731Z",
+      "band": "SPHEREx-D4",
+      "filename": "2026-09-02-image.fits",
+      "sourceUrl": "https://irsa.ipac.caltech.edu/ibe/data/spherex/qr3/level2/2026W36_1A/l2b-v27-2026-252/4/level2_2026W36_1A_0557_1D4_spx_l2b-v27-2026-252.fits?center=60.8109955%2C51.3404038&size=.05&gzip=false",
+      "rawSha256": "c3ff65a0478eeb4d56c499813b5588fc26123116aa697508cbc53d47234c3aa2",
+      "imageFileSha256": "605805dd0e99c10ecf67a9aea95061aa3aea9833c85bc63d099e9a98409126d5",
+      "pixelSha256": "a03549f02551d50c1bd95369522ecc03439a7fe165b48f606be0f3a12b40242d",
+      "axes": [
+        29,
+        29
+      ],
+      "finitePixels": 841
+    }
+  ]
+}

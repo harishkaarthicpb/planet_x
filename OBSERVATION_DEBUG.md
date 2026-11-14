@@ -1,8 +1,86 @@
+# Current simplified rectangle flow
+
+## Grey observation display investigation
+
+The placement error is now reproduced and corrected in the native dependency.
+Aladin Lite 3.8.2's embedded `mapproj::sip::SipCoeff::p` evaluator starts powers
+at x/y and repeatedly squares them rather than evaluating ordinary SIP powers
+from exponent zero. The unmodified native WCS reproduces the user's reported
+RA/Dec exactly. Converting PC to CD, removing inverse SIP coefficients, and
+omitting redundant pole keywords did not correct it; these are not app fixes.
+
+The app now serves a pinned local Aladin bundle with this single evaluator
+corrected. See `vendor/README.md` and `scripts/patch-aladin-sip.cjs` for the
+reproduction and source hash guard. The actual corrected WASM decodes the
+reported image center to [60.44195531414003, 54.5404773655837] and matches
+independent TAN-SIP equations at its center and all four corners. The science
+pixel hash remains identical to the user's download. Native checks also place
+both older D4 fixtures near their expected target. Browser/WebGL rendering is
+still unverified; this verification executes the pinned native coordinate code
+directly in Node, without a browser or live archive during tests.
+
+Restart `npm start` to enable the new local dependency route, then refresh the
+page and select a region again.
+
+The user's subsequent display event confirms a sky-placement mismatch, not a
+successful render: imageCenter = [73.27156451746073, -34.11285165393297], while
+viewCenter = [60.44222703421171, 54.54087028244997]. Opacity was 1 and the cuts
+were [0.22970916330814362, 4.662294387817383]. The image is about 89 degrees
+from the selected region. The exact cutout was subsequently downloaded and its
+pixel hash matched the user's log, enabling the reproduction described above.
+
+The controller now rejects this mismatch during decoding, before declaring
+readiness, using spherical separation and a generous limit based on cutout size
+and decoded FoV. It never moves the camera to the incorrect image center.
+Regression checks use the reported values and cover RA wraparound and poles.
+Server FITS inspection logs now include primary celestial WCS and SIP cards.
+
+The single-image viewer now uses Aladin's automatic image cuts instead of a
+fixed 0–40 MJy/sr range. The search accepts any detector, so that fixed range
+can hide contrast in a valid downloaded image. The image starts opaque, and
+the region is refitted after registration. Crop measurements wait for render
+frames after zoom changes and reject invalid projected bounds. Cancellation
+prevents an obsolete fit from changing the current crop.
+
+The ready message is set after the display checks; a display exception clears
+readiness and removes the failed layer. These checks validate registration and
+opacity, not the actual rendered science pixels. Aladin 3.8.2's standalone FITS
+readPixel method is unimplemented, so diagnostics now record image/view centers,
+FoVs, cuts, and crop bounds instead of misleading null pixel probes.
+
+Five additional controller tests cover fit timing, cancellation, invalid
+projection, automatic cuts, and display failure cleanup. A local server launch
+was declined during this investigation, so browser rendering and the exact cause
+of the reported grey screen remain unverified.
+
+Drawing a rectangle now requests mode=single and loads just one available SPHEREx
+image. This is the default on the normal localhost URL; old observationTest URL
+flags do not select async searching in the current frontend.
+
+The search uses the rectangle center, one collection at a time, MAXREC=1 and no
+wavelength/date constraint or newest-first sorting. It verifies the returned
+footprint contains that center, so the image overlaps the selected rectangle.
+QR3 is queried first; DR1 is checked only if QR3 returns no usable match. A failed
+HTTP request is not retried against another collection. The original search budget
+is shared across the possible two requests. One FITS file is downloaded, with its
+science IMAGE extension displayed at its original celestial coordinates. Coverage
+of the entire rectangle is not guaranteed.
+
+A captured independent QR3 point search at the retained fixture target returned
+19 real matching D4 images in 0.946 seconds. The new MAXREC=1, any-band request was
+not live-tested because permission was declined. Twenty-five backend tests and
+mocked viewer checks pass; these are not a real-browser rendering verification.
+Legacy pair and async backend helpers remain available for later work but are not
+called by the simplified rectangle action.
+
+---
+
 # SPHEREx observation diagnostics
 
-The existing map, rectangle selection and comparison viewer are retained. Timeout
-limits remain 90 seconds in the Node archive requests and decoder, and 105 seconds
-in browser network requests.
+The existing map, rectangle selection and comparison viewer are retained. Normal rectangle searches and FITS decoding keep their 90-second limits;
+cutout downloads keep the 105-second browser limit. Point-test discovery now uses
+asynchronous TAP with a 150-second overall job budget and at most 20 seconds per
+TAP HTTP request. Only the point-test browser search wait is 195 seconds.
 
 ## Reading failures
 
@@ -24,9 +102,21 @@ Start/restart the existing server with `npm start`, then open:
     http://localhost:8000/?observationTest=point
 
 Draw a rectangle using the existing tool. In this diagnostic mode its center is
-queried with the documented `spherex.artifact` / `spherex.plane` TAP join and
+queried asynchronously with the documented `spherex.artifact` / `spherex.plane` TAP join and
 `CONTAINS(POINT(...), p.poly)`. Cutouts are 0.05 degrees wide, so this mode does NOT
 provide full-rectangle coverage. The existing status message identifies it.
+
+`tap-async.js` creates one job using POST and a manual redirect, validates the job
+Location, checks its phase, sends PHASE=RUN only if PENDING, polls while queued or
+executing, and retrieves /results/result after COMPLETED. It requests the documented
+CSV format and normalizes the result for the existing selector. Each failure names
+creation, start, phase polling, execution, or result retrieval; an ERROR phase also
+retrieves /error. A failed submission is not retried or silently replaced by sync.
+
+UTC day selection now uses an explicit calendar conversion, with midnight/noon
+boundary tests. MJD itself starts at midnight: the pasted review's claim that it
+starts at noon confuses MJD with JD. No half-day shift is introduced.
+https://www.nist.gov/pml/time-and-frequency-division/timekeeping-and-clocks-faqs
 
 Use the normal URL to retain the full-rectangle polygon-overlap workflow:
 
@@ -46,7 +136,8 @@ No additional packages are needed:
 
 `--download 0` tests only the search. `--download 1` downloads one image after the
 search succeeds. `--download 2` downloads both serially. Downloads in the website
-are also serial while diagnosing. There is no automatic retry or timeout increase.
+are also serial while diagnosing. Failed submissions and image downloads are not automatically retried. The longer point-search browser wait accommodates
+the async job budget; cutout and decoder waits have not increased.
 
 Output includes the search result, original multi-extension FITS, an IMAGE-only
 FITS for display, and an extension/pixel summary. The IMAGE-only FITS preserves
@@ -56,7 +147,7 @@ This avoids depending on HDU-selection APIs absent from pinned Aladin Lite 3.8.2
 
 Run checks with:
 
-    node --test test/sky-region.test.mjs
+    node --test
 
 ## Live investigation: 2026-11-14
 
@@ -80,3 +171,43 @@ https://caltech-ipac.github.io/spherex-archive-documentation/spherex-data-access
 https://irsa.ipac.caltech.edu/docs/program_interface/TAP.html
 https://github.com/cds-astro/aladin-lite/blob/v3.8.2/src/js/Image.js
 https://github.com/cds-astro/aladin-lite/blob/v3.8.2/src/core/al-core/src/image/fits.rs
+
+## Async live check: 2026-11-14
+
+- Exact published M101/D2 SQL, including its URI expression, ascending order, and
+  no TOP limit, was tested independently with documented FORMAT=CSV.
+- GET https://irsa.ipac.caltech.edu/TAP/sync: HTTP 502 in 0.410 seconds.
+  Error page: "The proxy server received an invalid response from an upstream
+  server"; reason: "Error reading from remote server".
+- POST https://irsa.ipac.caltech.edu/TAP/async: HTTP 303 in 1.433 seconds,
+  Location https://irsa.ipac.caltech.edu/TAP/async/28314983.
+- GET https://irsa.ipac.caltech.edu/TAP/async/28314983/phase: HTTP 502 in
+  0.422 seconds with the same proxy error. Testing stopped there. Submission is
+  confirmed; execution state and result retrieval remain unknown. No duplicate job
+  was submitted after that failure.
+- The application still uses the same spatial join but selects raw artifact URIs,
+  D4 instead of the tutorial's D2, newest-first ordering, and TOP 200. These
+  differences are recorded, not asserted to cause the gateway failures.
+- A second genuine QR3 D4 cutout at the previously verified target downloaded:
+  HTTP 200 in 3.651 seconds, 3,962,880 bytes.
+- test/fixtures/spherex contains IMAGE-only diagnostic fixtures for the same
+  0.05-degree sky region. Their FITS headers identify the actual observations as
+  2026-08-25T07:03:31.518Z and 2026-09-02T10:36:30.731Z. The manifest records archive
+  URLs, raw-file hashes, and science-pixel hashes. These are real cached data, not
+  successful live-discovery results or simulated images. The original first MEF
+  remains preserved at /private/tmp/planetx-pipeline-debug/one-cutout.fits.
+- Twenty tests pass, including async lifecycle and failure-stage checks, UTC
+  boundaries, FITS integrity, and the genuine fixture timestamps and hashes.
+
+## Transient status-read errors
+
+A user log subsequently showed job 28315580 accepted with HTTP 303 and six
+successful QUEUED status responses, followed by one HTTP 502 on /phase. That
+response does not establish that execution itself failed. Phase polling now allows
+at most two extra GETs for HTTP 502/503/504, spaced 3 then 6 seconds apart by
+default, on the same job and within the original 150-second budget. This is a total
+retry limit per job, not a counter reset after every successful status read.
+Submission, RUN, result retrieval, other HTTP errors and transport timeouts are
+not automatically retried. Persistent failures include the existing job URL.
+Mock tests verify transient recovery and the persistent-failure bound; a live
+recovery has not yet been verified.

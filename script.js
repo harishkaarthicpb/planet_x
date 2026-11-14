@@ -1,7 +1,8 @@
-import { regionFromRectangle } from './sky-region.mjs';
+import { regionFromRectangle, angularSeparationDegrees } from './sky-region.mjs';
 
-// Same stable Aladin Lite distribution used by IRSA's HiPS example.
-const ALADIN_URL = 'https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js';
+// Pinned Aladin 3.8.2 with its SIP polynomial evaluator corrected locally.
+// See vendor/README.md for the reproduction and dependency patch.
+const ALADIN_URL = '/vendor/aladin-lite-3.8.2.js';
 const MISSIONS = {
   spherex: {
     name: 'SPHEREx DR1 — 3.293 µm',
@@ -19,14 +20,12 @@ const MISSIONS = {
     description: 'Gaia DR3 BP/G/RP source-flux map. Sandro Moreira, André Moitinho; CC BY-NC 3.0 IGO.'
   }
 };
-// Controlled diagnosis only; the normal URL retains full-rectangle searches.
-const pointTest = new URLSearchParams(window.location.search).get('observationTest') === 'point';
 export const observationDiagnostics = [];
 function observationLog(stage, event, details = {}) {
   const entry = {time:new Date().toISOString(),stage,event,...details};
   observationDiagnostics.push(entry);
   if (observationDiagnostics.length>200) observationDiagnostics.shift();
-  console.info('[Planet X observations]', entry);
+  console.info(`[Planet X] ${stage}: ${event}${details.url ? ` ${details.url}` : ''}`, entry);
 }
 function diagnosticUrl(value) {
   const url=new URL(value,window.location.href);
@@ -65,6 +64,8 @@ const preloadProgress = document.getElementById('preload-progress');
 let pairState = null;
 let preloadSequence = 0;
 let baseMission = null;
+let regionSurvey = null;
+const REGION_SURVEY_LAYER = 'planetx-region-survey';
 
 let searchMarkerCatalog = null;
 let markerVisible = false;
@@ -128,13 +129,15 @@ async function getProperties(id) {
   return properties;
 }
 
-function applyLayer(id, properties) {
+function applyLayer(id, properties, viewer = skyMap, layer = null) {
   return new Promise((resolve, reject) => {
     const options = {
       name: MISSIONS[id].name,
+      opacity: layer ? 0 : 1,
       errorCallback: reject,
       successCallback: hips => {
         try {
+          if (layer) hips.setOpacity(0);
           if (id === 'spherex') {
             const depth = Number(properties.hips_cube_depth);
             const low = 299792458 / Number(properties.em_max);
@@ -148,14 +151,16 @@ function applyLayer(id, properties) {
               unit: 'Hz'
             });
           }
-          resolve();
+          resolve(hips);
         } catch (error) { reject(error); }
       }
     };
     // Replaces the base layer in the SAME viewer. Aladin reads each survey's
     // coordinate frame (SPHEREx equatorial, Gaia galactic) from its metadata.
     // No goto/zoom calls: the current ICRS position, FoV and perspective stay put.
-    skyMap.setBaseImageLayer(A.HiPS(MISSIONS[id].url, options));
+    const hips = A.HiPS(MISSIONS[id].url, options);
+    if (layer) viewer.setOverlayImageLayer(hips, layer);
+    else viewer.setBaseImageLayer(hips);
   });
 }
 
@@ -170,8 +175,8 @@ function updateMissionControls() {
     button.setAttribute('aria-pressed', String(id === currentMission));
     if (dated) {
       const exposure = selectedPair?.observations[index];
-      button.textContent = exposure ? exposure.observedStart.slice(0, 10) : `Date ${index + 1}`;
-      button.title = exposure ? `Observed ${exposure.observedStart}; coverage: ${exposure.coverage || 'not measured'}` : 'Draw a rectangle to load two dates.';
+      button.textContent = exposure ? exposure.observedStart.slice(0, 10) : 'Observation';
+      button.title = exposure ? `Observed ${exposure.observedStart}; coverage: ${exposure.coverage || 'not measured'}` : 'Draw a rectangle to load one available observation.';
     }
   });
   updateRegionControls();
@@ -194,9 +199,12 @@ function updateSourceDescription() {
 async function switchMission(id) {
   if (switching || !skyMap) return false;
   if (isObservation(id)) {
-    if (!pairState?.ready) return false;
+    if (!pairState?.ready || !pairState.frames.has(id)) return false;
     await enterComparison();
     if (!pairState?.ready || !selectedRegion) return false;
+    await fitComparisonRegion();
+    if (!pairState?.ready || !comparisonActive) return false;
+    regionSurvey?.image?.setOpacity(0);
     pairState.frames.forEach((frame, key) => frame.image.setOpacity(key === id ? 1 : 0));
     currentMission = id;
     await verifyImageDisplay(id);
@@ -205,6 +213,7 @@ async function switchMission(id) {
     return true;
   }
   if (!MISSIONS[id]) return false;
+  if (selectedRegion) return switchRegionSurvey(id);
   leaveComparison();
   if (baseMission === id) {
     currentMission = id;
@@ -238,6 +247,46 @@ async function switchMission(id) {
   }
 }
 
+async function switchRegionSurvey(id) {
+  const region = selectedRegion;
+  switching = true;
+  updateMissionControls();
+  try {
+    await enterComparison();
+    if (selectedRegion !== region || !comparisonActive) return false;
+    status.hidden = false;
+    status.textContent = `Loading ${MISSIONS[id].name} in the selected region…`;
+    if (regionSurvey?.region !== region || regionSurvey.id !== id || !regionSurvey.image) {
+      const properties = await getProperties(id);
+      if (selectedRegion !== region || !comparisonActive) return false;
+      const state = { region, id, image: null };
+      regionSurvey = state;
+      const image = await applyLayer(id, properties, comparisonMap, REGION_SURVEY_LAYER);
+      state.image = image;
+      if (regionSurvey !== state || selectedRegion !== region || !comparisonActive) return false;
+    }
+    await fitComparisonRegion();
+    if (selectedRegion !== region || !comparisonActive) return false;
+    pairState?.frames.forEach(frame => frame.image.setOpacity(0));
+    regionSurvey.image.setOpacity(1);
+    currentMission = id;
+    updateSourceDescription();
+    status.hidden = true;
+    return true;
+  } catch (error) {
+    if (regionSurvey?.region === region && regionSurvey.id === id) {
+      comparisonMap.removeImageLayer(REGION_SURVEY_LAYER);
+      regionSurvey = null;
+    }
+    showError(error);
+    return false;
+  } finally {
+    switching = false;
+    if (selectedRegion !== region || !comparisonActive) status.hidden = true;
+    updateMissionControls();
+  }
+}
+
 async function verifyImageDisplay(id) {
   const start=performance.now();
   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
@@ -246,20 +295,23 @@ async function verifyImageDisplay(id) {
   const registered=comparisonMap.getOverlayImageLayer(frame.layer)===frame.image;
   const opacity=frame.image.getOpacity();
   const [width,height]=comparisonMap.getSize();
-  const samples=[];
-  for (const [x,y] of [[.5,.5],[.25,.25],[.75,.25],[.25,.75],[.75,.75]]) {
-    try { samples.push(frame.image.readPixel(width*x,height*y)); } catch(error) { samples.push({error:String(error)}); }
-  }
-  observationLog('Aladin image display','frame',{requestId:selectedPair.requestId,id,registered,opacity,size:[width,height],elapsedMs:Math.round(performance.now()-start),samples});
+  // Standalone FITS readPixel is unimplemented in Aladin 3.8.2. Its null
+  // results cannot tell us whether the image is visible or has coverage.
+  observationLog('Aladin image display','frame',{requestId:selectedPair.requestId,id,registered,opacity,
+    size:[width,height],elapsedMs:Math.round(performance.now()-start),
+    viewCenter:comparisonMap.getRaDec(),viewFov:comparisonMap.getFov(),
+    imageCenter:[frame.image.ra,frame.image.dec],imageFov:frame.image.fov,
+    cuts:frame.image.getCuts(),crop:regionMapElement.style.getPropertyValue('--region-clip')});
   if (!registered || opacity!==1) throw new Error(`Aladin display failed for ${id}: registered=${registered}, opacity=${opacity}.`);
 }
 
 function leaveComparison() {
+  const wasActive = comparisonActive;
   comparisonActive = false;
   regionView.hidden = true;
   document.body.classList.remove('region-comparison');
   document.getElementById('sky-map').inert = false;
-  if (isObservation(currentMission)) currentMission = baseMission;
+  if (wasActive || isObservation(currentMission)) currentMission = baseMission;
   coordinateFields.disabled = !skyMap;
   backToSkyButton.hidden = true;
   clearCursorCoordinates();
@@ -294,14 +346,15 @@ async function enterComparison() {
   sizeComparisonFrame();
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   if (selectedRegion !== region || !comparisonActive) return;
-  fitComparisonRegion();
+  await fitComparisonRegion();
   updateRegionControls();
 }
 
 function enforceRegionLayers() {
   // Aladin may restore a default background after a failed first FITS load.
-  // The comparison must contain only the two requested observations.
+  // Keep only the selected region's observation and explicitly chosen survey.
   const allowed = new Set([...(pairState?.frames.values() || [])].map(frame => frame.layer));
+  if (regionSurvey) allowed.add(REGION_SURVEY_LAYER);
   for (const layer of [...comparisonMap.getStackLayers()]) {
     if (!allowed.has(layer)) comparisonMap.removeImageLayer(layer);
   }
@@ -323,29 +376,40 @@ function scheduleRegionFit() {
     fitScheduled = false;
     if (comparisonActive && selectedRegion) {
       sizeComparisonFrame();
-      fitComparisonRegion();
+      void fitComparisonRegion().catch(showError);
     }
   });
 }
 
-function fitComparisonRegion() {
-  if (!comparisonMap || !selectedRegion) return;
-  const { position: { ra, dec }, corners, rotation } = selectedRegion;
+let regionFitSequence = 0;
+const afterRenderFrame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+async function fitComparisonRegion() {
+  if (!comparisonMap || !selectedRegion || !comparisonActive) return;
+  const sequence = ++regionFitSequence;
+  const region = selectedRegion;
+  const valid = () => sequence === regionFitSequence && selectedRegion === region && comparisonActive;
+  const { position: { ra, dec }, corners, rotation } = region;
   comparisonMap.gotoRaDec(ra, dec);
   // Version 3.8.2 treats zero as an absent rotation; 360 is equivalent to zero.
   comparisonMap.setRotation(rotation || 360);
-  let fov = selectedRegion.sizeDegrees;
+  let fov = region.sizeDegrees;
   comparisonMap.setFoV(fov);
+  await afterRenderFrame();
+  if (!valid()) return;
   const [width, height] = comparisonMap.getSize();
-  if (!(width > 0 && height > 0)) return;
+  if (!(width > 0 && height > 0)) throw new Error('The region viewer has no drawing area.');
   for (let i = 0; i < 3; i++) {
     const pixels = corners.map(([lon, lat]) => comparisonMap.world2pix(lon, lat));
-    if (pixels.some(p => !p || p.some(n => !Number.isFinite(n)))) return;
+    if (pixels.some(p => !p || p.some(n => !Number.isFinite(n)))) throw new Error('The selected region could not be projected into the viewer.');
     const scale = Math.max(...pixels.map(([x, y]) => Math.max(Math.abs(x-width/2)/(width/2), Math.abs(y-height/2)/(height/2))));
+    if (!(scale > 0 && Number.isFinite(scale))) throw new Error('The selected region has invalid projected bounds.');
     fov = 2 * Math.atan(Math.tan(fov*Math.PI/360) * scale * 1.002) * 180/Math.PI;
     comparisonMap.setFoV(fov);
+    await afterRenderFrame();
+    if (!valid()) return;
   }
   const pixels = corners.map(([lon, lat]) => comparisonMap.world2pix(lon, lat));
+  if (pixels.some(p => !p || p.some(n => !Number.isFinite(n)))) throw new Error('The selected region crop could not be calculated.');
   regionMapElement.style.setProperty('--region-clip', `polygon(${pixels.map(([x,y]) => `${x}px ${y}px`).join(',')})`);
 }
 
@@ -381,14 +445,28 @@ function prepareResidentImage(state,id,exposure,blobUrl) {
     state.controller.signal.addEventListener('abort',cancel,{once:true});
     try {
       image=A.image(blobUrl,{
-        name:`SPHEREx ${exposure.observedStart}`,imgFormat:'fits',opacity:0,minCut:0,maxCut:40,
-        successCallback:()=>{
-          image.setOpacity(0);
+        // Single-image searches accept any detector. Let Aladin calculate cuts
+        // from these pixels rather than forcing every band into a 0–40 range.
+        name:`SPHEREx ${exposure.observedStart}`,imgFormat:'fits',opacity:1,
+        successCallback:(ra,dec,fov)=>{
           if (settled || pairState!==state || state.controller.signal.aborted) {
             setTimeout(()=>comparisonMap.removeImageLayer(layer),0);fail(new Error('Observation loading cancelled.'));return;
           }
-          observationLog(phase,'complete',{requestId:state.requestId,id,elapsedMs:Math.round(performance.now()-start)});
-          phase='Aladin image registration';image.setCuts(0,40);
+          // A registered layer can still be on the wrong part of the sky.
+          // Compare against the requested cutout, never move the camera to hide
+          // a WCS error. Allow generous room for rotation and partial cutouts.
+          const expected = [state.region.position.ra,state.region.position.dec];
+          const separation = angularSeparationDegrees(expected,[ra,dec]);
+          const maximum = 2 * Math.max(state.region.sizeDegrees,Number.isFinite(fov) ? Math.abs(fov) : 0);
+          observationLog('FITS sky placement','check',{requestId:state.requestId,id,
+            expectedCenter:expected,imageCenter:[ra,dec],separationDegrees:separation,maximumDegrees:maximum});
+          if (![ra,dec,fov,separation].every(Number.isFinite) || Math.abs(dec)>90 || fov<=0 || separation>maximum) {
+            fail(new Error(`FITS coordinate mismatch: decoded image center RA ${ra}, Dec ${dec} is ${separation.toFixed(3)}° from the selected region. The observation cannot be displayed at these coordinates.`));
+            return;
+          }
+          image.setOpacity(comparisonActive ? 1 : 0);
+          observationLog(phase,'complete',{requestId:state.requestId,id,elapsedMs:Math.round(performance.now()-start),imageCenter:[ra,dec],imageFov:fov,cuts:image.getCuts()});
+          phase='Aladin image registration';
           const waitForRegistration=()=>{
             if (settled || pairState!==state || state.controller.signal.aborted) { comparisonMap.removeImageLayer(layer);fail(new Error('Observation loading cancelled.'));return; }
             if (comparisonMap.getOverlayImageLayer(layer)!==image) { setTimeout(waitForRegistration,16);return; }
@@ -409,7 +487,7 @@ function updateRegionControls() {
   drawRegionButton.setAttribute('aria-pressed', String(drawingRegion));
   clearRegionButton.hidden = !selectedRegion;
   loadObservationButton.disabled = !selectedRegion || drawingRegion || switching || !!pairState?.pending;
-  loadObservationButton.textContent = pairState?.pending ? 'Loading two observations…' : 'Load two observations';
+  loadObservationButton.textContent = pairState?.pending ? 'Loading observation…' : 'Load one observation';
 }
 
 function clearSelectedRegion() {
@@ -418,6 +496,8 @@ function clearSelectedRegion() {
   drawingRegion = false;
   leaveComparison();
   discardPreparedObservations();
+  if (regionSurvey) comparisonMap.removeImageLayer(REGION_SURVEY_LAYER);
+  regionSurvey = null;
   selectedRegion = null;
   regionOverlay?.removeAll();
   regionOverlay?.hide();
@@ -432,7 +512,7 @@ async function startRegionSelection() {
   clearSelectedRegion();
   const sequence = ++selectionSequence;
   drawingRegion = true;
-  regionResult.textContent = 'Drag a rectangle, then release to lock it and load two dates. Escape cancels.';
+  regionResult.textContent = 'Drag a rectangle, then release to load one available observation. Escape cancels.';
   updateRegionControls();
   try {
     await skyMap.select('rect', async rect => {
@@ -474,32 +554,30 @@ async function loadSelectedObservations() {
   await enterComparison();
   if (selectedRegion !== region || !comparisonActive) return false;
   discardPreparedObservations();
-  const state = { sequence: ++preloadSequence, controller: new AbortController(), frames: new Map(), blobUrls: [], pending:true, ready:false };
+  const state = { sequence: ++preloadSequence, region, controller: new AbortController(), frames: new Map(), blobUrls: [], pending:true, ready:false };
   pairState = state;
   preloadProgress.hidden = false;
-  preloadProgress.textContent = 'Finding two different dates overlapping the rectangle…';
+  preloadProgress.textContent = 'Finding one available SPHEREx image overlapping the rectangle…';
   updateMissionControls();
   let step = 'Observation search';
   try {
-    const query=new URLSearchParams({corners:JSON.stringify(region.corners),mode:pointTest?'point':'rectangle'});
+    const query=new URLSearchParams({corners:JSON.stringify(region.corners),mode:'single'});
     const url=`/api/spherex/observations?${query}`;
     const started=performance.now();
-    observationLog(step,'start',{url:diagnosticUrl(url),mode:pointTest?'point':'rectangle'});
+    observationLog(step,'start',{url:diagnosticUrl(url),mode:'single'});
     const response=await fetch(url,{signal:AbortSignal.any([state.controller.signal,AbortSignal.timeout(105000)])});
     observationLog(step,'headers',{url:diagnosticUrl(url),status:response.status,elapsedMs:Math.round(performance.now()-started)});
     const result=await readArchiveResponse(response,step);
     state.requestId=result.requestId;
     observationLog(step,'complete',{requestId:state.requestId,status:response.status,elapsedMs:Math.round(performance.now()-started),recordCount:result.recordCount,searchLimited:result.searchLimited});
     if (pairState!==state || state.controller.signal.aborted) return false;
-    if (!Array.isArray(result.observations) || result.observations.length!==2 ||
-      result.observations.some(e=>!e.cutoutUrl || !e.observedStart) ||
-      result.observations[0].observedStart.slice(0,10)===result.observations[1].observedStart.slice(0,10)) throw new Error('The archive did not return two observations from different dates.');
-    // Keep downloads serial while diagnosing. A failed first file prevents a
-    // second request; its timing cannot be confused with the other download.
+    if (!Array.isArray(result.observations) || result.observations.length!==1 ||
+      !result.observations[0].cutoutUrl || !result.observations[0].observedStart) throw new Error('The archive did not return one usable observation.');
     for (const [index,exposure] of result.observations.entries()) {
       const date=exposure.observedStart.slice(0,10);
       step=`Image download for ${date}`;
-      preloadProgress.textContent=`Loading image ${index+1}/2 · ${date}${result.mode==='point'?' · center test, 0.05° only':''}…`;
+      preloadProgress.textContent=`Loading observation · ${date}…`;
+      if (exposure.downloadUrl) console.info('[Planet X] Original image URL:', diagnosticUrl(exposure.downloadUrl));
       const downloadStart=performance.now();
       observationLog(step,'start',{requestId:state.requestId,url:diagnosticUrl(exposure.cutoutUrl)});
       const cutout=await fetch(exposure.cutoutUrl,{signal:AbortSignal.any([state.controller.signal,AbortSignal.timeout(105000)])});
@@ -511,23 +589,27 @@ async function loadSelectedObservations() {
       if (pairState!==state || state.controller.signal.aborted) return false;
       const blobUrl=URL.createObjectURL(new Blob([bytes],{type:'application/fits'}));state.blobUrls.push(blobUrl);
       step=`Browser FITS decoding for ${date}`;
-      preloadProgress.textContent=`Preparing image ${index+1}/2 · ${date}…`;
+      preloadProgress.textContent=`Preparing observation · ${date}…`;
       await prepareResidentImage(state,`observation-${index}`,exposure,blobUrl);
     }
     if (pairState !== state || state.controller.signal.aborted) return false;
     selectedPair = result;
     state.ready = true;
     enforceRegionLayers();
-    preloadProgress.textContent = result.mode==='point'?'Center test ready · two 0.05° cutouts only · not full-rectangle coverage':`Two dates ready · missing coverage stays black${result.searchLimited?' · dates from a limited search':''}`;
     // Do not reopen a comparison the user left while the files were loading.
+    step = 'Aladin image display';
     if (comparisonActive) await switchMission('observation-0');
+    if (pairState !== state || state.controller.signal.aborted) return false;
+    preloadProgress.textContent = `Observation ready · ${result.observations[0].observedStart.slice(0,10)} UTC · ${result.observations[0].band} · ${result.observations[0].coverage==='full'?'full footprint coverage':'partial coverage possible'}`;
     return true;
   } catch (error) {
+    state.ready = false;
     state.controller.abort();
     state.frames.forEach(frame => comparisonMap.removeImageLayer(frame.layer));
     state.blobUrls.forEach(url => URL.revokeObjectURL(url));
     state.frames.clear(); state.blobUrls = [];
     if (pairState === state) {
+      if (isObservation(currentMission)) currentMission = baseMission;
       const message = error.name === 'TimeoutError' ? `${step} timed out. Please retry.` : (error.message || String(error));
       preloadProgress.textContent = `Observations unavailable: ${message}`;
       observationLog(step,'error',{requestId:state.requestId,exception:{name:error.name,message:error.message,cause:error.cause?.message}});

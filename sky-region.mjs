@@ -6,6 +6,11 @@ const normalize = v => { const length = Math.hypot(...v); return v.map(x => x / 
 const vector = ([ra, dec]) => [Math.cos(dec*RAD)*Math.cos(ra*RAD), Math.cos(dec*RAD)*Math.sin(ra*RAD), Math.sin(dec*RAD)];
 const coordinates = v => [(Math.atan2(v[1], v[0])/RAD + 360)%360, Math.asin(Math.max(-1, Math.min(1, v[2])))/RAD];
 
+export function angularSeparationDegrees(a, b) {
+  const first = vector(a), second = vector(b);
+  return Math.atan2(Math.hypot(...cross(first, second)), dot(first, second)) / RAD;
+}
+
 function contains(polygon, points) {
   const center = normalize(polygon.reduce((sum, v) => sum.map((n, i) => n + v[i]), [0, 0, 0]));
   return polygon.every((a, i) => {

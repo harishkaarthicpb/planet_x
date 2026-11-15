@@ -55,6 +55,15 @@ test('invalid, oversized, degenerate and off-projection rectangles are rejected'
   assert.throws(() => regionFromCorners([[0,0],[NaN,0],[0,.1],[.1,.1]]), /valid ICRS/);
 });
 
+test('infrared allows wide rectangles across RA wrap while time keeps its one-degree limit',()=>{
+  const corners=[[330,-30],[30,-30],[30,30],[330,30]];
+  const region=regionFromCorners(corners,{maxSizeDegrees:170});
+  assert.ok(region.sizeDegrees>80 && region.sizeDegrees<90);
+  assert.ok(Math.min(region.position.ra,360-region.position.ra)<1e-8);
+  assert.throws(()=>regionFromCorners(corners),/within 1°/);
+  assert.throws(()=>regionFromCorners(corners,{maxSizeDegrees:180}),/170°/);
+});
+
 test('spherical footprint containment handles either winding, RA wrap and poles', () => {
   assert.equal(footprintContainsRegion(footprint, rectangle), true);
   assert.equal(footprintContainsRegion('POLYGON ICRS 59 49 59 51 61 51 61 49', rectangle), true);

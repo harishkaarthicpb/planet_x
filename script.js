@@ -1,5 +1,7 @@
 import { regionFromRectangle, angularSeparationDegrees } from './sky-region.mjs';
 import { sampleFitsPreview } from './fits-preview.mjs';
+import { observeSurveyTiles, waitForSurveyTiles, spectrumFrameSize, captureSpectrumFrame, captureBlankSpectrumFrame, bufferSpectrumFrames, disposeSpectrumFrames, paintSpectrumFrame } from './spectrum-buffer.mjs';
+import { registerCubeTileRoot, blankCubeChannels } from './hips-cube-tiles.mjs';
 
 // Pinned Aladin 3.8.2 with its SIP polynomial evaluator corrected locally.
 // See vendor/README.md for the reproduction and dependency patch.
@@ -10,7 +12,7 @@ const MISSIONS = {
     url: 'https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube',
     credit: 'SPHEREx · NASA/Caltech/IPAC',
     link: 'https://irsa.ipac.caltech.edu/Missions/spherex.html',
-    description: 'SPHEREx DR1 infrared sky, fixed channel at approximately 3.293 µm.'
+    description: 'SPHEREx DR1 infrared sky at approximately 3.293 µm.'
   },
   gaia: {
     name: 'Gaia DR3 colour flux map',
@@ -35,7 +37,16 @@ function diagnosticUrl(value) {
 }
 
 let CHANNEL_INDEX = 62; // Selected from each verified release's wavelength metadata.
+let baseSurveyImage = null;
+let wavelengthTimer = null;
+let pendingWavelength = null;
+const wavelengthPanel = document.getElementById('wavelength-panel');
+const wavelengthSlider = document.getElementById('wavelength-slider');
+const wavelengthValue = document.getElementById('wavelength-value');
+const wavelengthMin = document.getElementById('wavelength-min');
+const wavelengthMax = document.getElementById('wavelength-max');
 let releaseSignature = null;
+let deferredSurveyUpdate = false;
 let checkingUpdates = false;
 let lastUpdateCheck = Date.now();
 const status = document.getElementById('status');
@@ -79,6 +90,34 @@ let selectionSequence = 0;
 const drawRegionButton = document.getElementById('draw-region');
 const clearRegionButton = document.getElementById('clear-region');
 const loadObservationButton = document.getElementById('load-observation');
+const loadSpectrumButton = document.getElementById('load-spectrum');
+const regionModeFields = document.getElementById('region-mode');
+const regionModeTime = document.getElementById('region-mode-time');
+const regionModeInfrared = document.getElementById('region-mode-infrared');
+const spectrumPlayer = document.getElementById('spectrum-player');
+const spectrumScrubber = document.getElementById('spectrum-scrubber');
+const spectrumValue = document.getElementById('spectrum-value');
+const spectrumBands = document.getElementById('spectrum-bands');
+const spectrumPlay = document.getElementById('spectrum-play');
+const spectrumHelp = document.getElementById('spectrum-help');
+const spectrumLoading = document.getElementById('spectrum-loading');
+const spectrumLoadingProgress = document.getElementById('spectrum-loading-progress');
+const spectrumLoadingCount = document.getElementById('spectrum-loading-count');
+const spectrumLoadingDetail = document.getElementById('spectrum-loading-detail');
+const spectrumRangeControls = document.getElementById('spectrum-range-controls');
+const spectrumRangeFrom = document.getElementById('spectrum-range-from');
+const spectrumRangeTo = document.getElementById('spectrum-range-to');
+const spectrumRangeSummary = document.getElementById('spectrum-range-summary');
+const spectrumRangeError = document.getElementById('spectrum-range-error');
+const prepareSpectrumRange = document.getElementById('prepare-spectrum-range');
+let spectrumRangeSignature='';
+let spectrumTilesSignature='';
+let regionMode = 'time';
+let spectrumState = null;
+let spectrumTiles = [];
+let spectrumPreparation = null;
+const spectrumCanvas = document.createElement('canvas');
+spectrumCanvas.className='spectrum-canvas';spectrumCanvas.hidden=true;spectrumCanvas.setAttribute('aria-hidden','true');
 const regionResult = document.getElementById('region-result');
 const preloadProgress = document.getElementById('preload-progress');
 let pairState = null;
@@ -131,20 +170,349 @@ function configureSpherexSurvey(survey) {
   const properties=survey.properties;
   const release=properties.creator_did?.match(/^ivo:\/\/IPAC\/P\/SPHEREx\/DR([1-9]\d*)\/cube$/i)?.[1];
   const wavelengths=(properties.data_cube_crval3_arr || '').trim().split(/\s+/).map(Number);
-  const channel=survey.channelIndex ?? wavelengths.reduce((best,value,index)=>
-    Math.abs(value-3.293)<Math.abs(wavelengths[best]-3.293)?index:best,0);
+  const previousWavelength=skyWavelengths()[CHANNEL_INDEX];
+  const target=previousWavelength ?? 3.293;
+  const channel=previousWavelength===undefined && survey.channelIndex!==undefined?survey.channelIndex:
+    wavelengths.reduce((best,value,index)=>Math.abs(value-target)<Math.abs(wavelengths[best]-target)?index:best,0);
   const url=new URL(survey.url);
   if(!release || url.origin!=='https://irsa.ipac.caltech.edu' || !url.pathname.startsWith('/data/hips/') ||
     url.search || url.hash || url.username || url.password || !Number.isInteger(channel) ||
-    !Number.isFinite(wavelengths[channel]) || Math.abs(wavelengths[channel]-3.293)>.05){
+    !Number.isFinite(wavelengths[channel]) || Math.abs(wavelengths[channel]-target)>.05){
     throw new Error('The published SPHEREx map is not compatible with this viewer.');
   }
+  registerCubeTileRoot(survey.url);
   CHANNEL_INDEX=channel;
-  Object.assign(MISSIONS.spherex,{url:survey.url,name:`SPHEREx DR${release} — ${wavelengths[channel].toFixed(3)} µm`,
-    credit:`SPHEREx DR${release} · NASA/Caltech/IPAC`,
-    description:`SPHEREx DR${release} infrared sky, fixed wavelength near ${wavelengths[channel].toFixed(3)} µm.`});
+  Object.assign(MISSIONS.spherex,{url:survey.url});
   metadata.set('spherex',properties);
+  updateWavelengthDescription();
   releaseSignature=`${survey.url}|${survey.revision || [properties.creator_did,properties.hips_release_date,properties.hips_creation_date].join('|')}`;
+}
+
+function skyWavelengths() {
+  const properties=metadata.get('spherex');
+  const values=(properties?.data_cube_crval3_arr || '').trim().split(/\s+/).map(Number);
+  return values.length===Number(properties?.hips_cube_depth) && values.every(value=>Number.isFinite(value) && value>0)?values:[];
+}
+
+function updateWavelengthDescription() {
+  const wavelength=skyWavelengths()[CHANNEL_INDEX];
+  if(wavelength===undefined)return;
+  const release=metadata.get('spherex').creator_did?.match(/\/DR(\d+)\/cube$/i)?.[1];
+  const name=`SPHEREx${release?` DR${release}`:''}`;
+  Object.assign(MISSIONS.spherex,{name:`${name} — ${wavelength.toFixed(3)} µm`,
+    credit:`${name} · ${wavelength.toFixed(3)} µm · NASA/Caltech/IPAC`,
+    description:`${name} infrared sky at ${wavelength.toFixed(3)} µm (channel ${CHANNEL_INDEX+1}).`});
+}
+
+function updateWavelengthControls() {
+  const wavelengths=skyWavelengths();
+  wavelengthPanel.hidden=currentMission!=='spherex' || comparisonActive || !wavelengths.length;
+  wavelengthSlider.disabled=wavelengthPanel.hidden || switching || !baseSurveyImage;
+  if(wavelengths.length){
+    wavelengthSlider.max=String(wavelengths.length-1);
+    wavelengthSlider.value=String(CHANNEL_INDEX);
+    wavelengthMin.textContent=`${wavelengths[0].toFixed(3)} µm`;
+    wavelengthMax.textContent=`${wavelengths.at(-1).toFixed(3)} µm`;
+    showWavelengthValue(CHANNEL_INDEX);
+  }
+  if(wavelengthSlider.disabled){clearTimeout(wavelengthTimer);wavelengthTimer=null;pendingWavelength=null;}
+}
+
+function showWavelengthValue(channel) {
+  const wavelengths=skyWavelengths(),value=wavelengths[channel];
+  if(value===undefined)return;
+  wavelengthValue.textContent=`${value.toFixed(3)} µm${blankCubeChannels(metadata.get('spherex')).has(channel)?' · No archive data':''}`;
+  wavelengthSlider.setAttribute('aria-valuetext',`${value.toFixed(3)} micrometers, band ${channel+1} of ${wavelengths.length}`);
+  wavelengthValue.title=`Band ${channel+1} of ${wavelengths.length}`;
+}
+
+function setSkyChannel(channel) {
+  if(wavelengthSlider.disabled || !Number.isInteger(channel) || skyWavelengths()[channel]===undefined)return false;
+  const previous=CHANNEL_INDEX,properties=metadata.get('spherex');
+  try{
+    setSurveyChannel(baseSurveyImage,properties,channel);
+    baseSurveyImage.setOpacity(surveyOpacity('spherex',channel));
+    // Keep a cached survey crop in sync; dated FITS frames are independent.
+    if(regionSurvey?.id==='spherex' && regionSurvey.image)setSurveyChannel(regionSurvey.image,properties,channel);
+    CHANNEL_INDEX=channel;updateWavelengthDescription();updateSourceDescription();
+    updateWavelengthControls();return true;
+  }catch(error){
+    try{setSurveyChannel(baseSurveyImage,properties,previous);
+      baseSurveyImage.setOpacity(surveyOpacity('spherex',previous));
+      if(regionSurvey?.id==='spherex' && regionSurvey.image)setSurveyChannel(regionSurvey.image,properties,previous);
+    }catch{/* Preserve the original error. */}
+    updateWavelengthControls();showError(error);return false;
+  }
+}
+
+function flushSkyWavelength() {
+  clearTimeout(wavelengthTimer);wavelengthTimer=null;
+  const channel=pendingWavelength;pendingWavelength=null;
+  if(channel!==null)setSkyChannel(channel);
+}
+wavelengthSlider.addEventListener('input',()=>{
+  if(wavelengthSlider.disabled)return;
+  pendingWavelength=Number(wavelengthSlider.value);showWavelengthValue(pendingWavelength);
+  // Limit dragging to ten channel changes per second; commit the final band
+  // immediately on release or keyboard change.
+  if(wavelengthTimer===null)wavelengthTimer=setTimeout(flushSkyWavelength,100);
+});
+wavelengthSlider.addEventListener('change',flushSkyWavelength);
+
+function setSurveyChannel(image,properties,channel=CHANNEL_INDEX) {
+  const depth=Number(properties.hips_cube_depth),low=299792458/Number(properties.em_max),high=299792458/Number(properties.em_min);
+  if(!(Number.isInteger(channel) && channel>=0 && depth>channel && Number.isFinite(low) && high>low)){
+    throw new Error('SPHEREx cube metadata is missing or invalid.');
+  }
+  if(blankCubeChannels(properties).has(channel)){image.setOpacity(0);return;}
+  // Aladin bins the cube's frequency interval uniformly. The physical channel
+  // labels come from data_cube_crval3_arr, not that synthetic bin coordinate.
+  image.setFrequency({value:low+(channel+.5)/depth*(high-low),unit:'Hz'});
+}
+
+function surveyOpacity(id,channel=CHANNEL_INDEX) {
+  return id==='spherex' && blankCubeChannels(metadata.get('spherex')).has(channel)?0:1;
+}
+
+function selectedSpectrumChannels() {
+  const from=Number(spectrumRangeFrom.value),to=Number(spectrumRangeTo.value),count=skyWavelengths().length;
+  if(spectrumRangeFrom.value==='' || spectrumRangeTo.value==='' || !Number.isInteger(from) || !Number.isInteger(to) || from<0 || to>=count || from>to){
+    throw new Error('Choose a From wavelength that is less than or equal to To.');
+  }
+  return Array.from({length:to-from+1},(_,index)=>from+index);
+}
+
+function updateSpectrumRangeControls() {
+  const wavelengths=skyWavelengths(),signature=wavelengths.join(',');
+  if(signature!==spectrumRangeSignature){
+    const oldFrom=Number(spectrumRangeFrom.value),oldTo=Number(spectrumRangeTo.value),initialized=!!spectrumRangeSignature;
+    spectrumRangeFrom.replaceChildren();spectrumRangeTo.replaceChildren();
+    wavelengths.forEach((value,index)=>{
+      for(const select of [spectrumRangeFrom,spectrumRangeTo]){
+        const option=document.createElement('option');option.value=String(index);option.textContent=value.toFixed(3);select.append(option);
+      }
+    });
+    spectrumRangeFrom.value=String(initialized?Math.min(oldFrom,wavelengths.length-1):0);
+    spectrumRangeTo.value=String(initialized?Math.min(oldTo,wavelengths.length-1):wavelengths.length-1);
+    spectrumRangeSignature=signature;
+  }
+  spectrumRangeControls.hidden=regionMode!=='infrared';
+  const slot=document.getElementById(comparisonActive && regionMode==='infrared'?'player-spectrum-range-slot':'region-spectrum-range-slot');
+  if(spectrumRangeControls.parentElement!==slot)slot.append(spectrumRangeControls);
+  spectrumRangeFrom.disabled=spectrumRangeTo.disabled=switching || !wavelengths.length;
+  try{
+    const channels=selectedSpectrumChannels();spectrumRangeError.hidden=true;
+    spectrumRangeSummary.textContent=`${channels.length} band${channels.length===1?'':'s'} selected · Fewer bands load faster.`;
+    prepareSpectrumRange.disabled=!selectedRegion || switching || !!spectrumState?.preparing;
+  }catch(error){spectrumRangeError.hidden=false;spectrumRangeError.textContent=error.message;prepareSpectrumRange.disabled=true;}
+}
+
+function changeSpectrumRange() {
+  stopSpectrum();
+  if(spectrumState){
+    spectrumState.ready=false;
+    if(spectrumState.preparing)spectrumState.controller.abort(new Error('Wavelength range changed. Choose Prepare selected range.'));
+    spectrumHelp.textContent='Range changed. Choose Prepare selected range to load these wavelengths.';
+  }
+  updateSpectrumRangeControls();updateSpectrumControls();
+}
+
+function updateSpectrumControls() {
+  const state=spectrumState;
+  spectrumLoading.hidden=!(regionMode==='infrared' && comparisonActive && state?.region===selectedRegion && state.preparing);
+  if(!spectrumLoading.hidden){
+    const wavelengths=skyWavelengths(),total=state.channels.length,loaded=state.channels.filter(channel=>state.frames[channel]).length;
+    spectrumLoadingProgress.max=total || 1;spectrumLoadingProgress.value=loaded;
+    spectrumLoadingCount.textContent=`${loaded} of ${total} wavelengths ready · ${Math.round(loaded/(total || 1)*100)}%`;
+    spectrumLoadingDetail.textContent=state.loadingChannel===undefined?'Opening the infrared sky map…':
+      `Loading ${wavelengths[state.loadingChannel].toFixed(3)} µm. Play becomes available after all wavelengths are prepared.`;
+  }
+  const visible=regionMode==='infrared' && comparisonActive && state?.region===selectedRegion && currentMission==='spherex';
+  spectrumPlayer.hidden=!visible;
+  document.body.classList.toggle('has-spectrum',!!visible);
+  spectrumPlay.disabled=!visible || switching || !state?.ready || state.channels.length<2;
+  spectrumPlayer.setAttribute('aria-busy',String(!!state?.preparing));
+  spectrumPlay.textContent=state?.playing?'Ⅱ Pause':'▶ Play';
+  spectrumPlay.setAttribute('aria-pressed',String(!!state?.playing));
+  spectrumPlay.setAttribute('aria-label',state?.playing?'Pause spectrum':'Play spectrum');
+  spectrumScrubber.disabled=spectrumPlay.disabled;
+  if(!visible)return;
+  const wavelengths=skyWavelengths(),channels=state.channels,signature=channels.join(',');
+  if(spectrumTilesSignature!==signature){
+    spectrumTilesSignature=signature;
+    spectrumBands.replaceChildren();spectrumTiles=[];
+    channels.forEach(index=>{
+      const value=wavelengths[index];
+      const tile=document.createElement('span');tile.classList.add('spectrum-band');
+      tile.title=`${value.toFixed(3)} µm`;tile.style.setProperty('--band',index);
+      spectrumBands.append(tile);spectrumTiles.push(tile);
+    });
+  }
+  spectrumScrubber.min=String(channels[0]);spectrumScrubber.max=String(channels.at(-1));spectrumScrubber.value=String(state.channel);
+  spectrumValue.textContent=`${wavelengths[state.channel].toFixed(3)} µm · ${channels.indexOf(state.channel)+1}/${channels.length}`;
+  spectrumScrubber.setAttribute('aria-valuetext',`${wavelengths[state.channel].toFixed(3)} micrometers, frame ${channels.indexOf(state.channel)+1} of ${channels.length} selected bands`);
+  spectrumTiles.forEach((tile,index)=>{
+    tile.classList.toggle('selected',channels[index]===state.channel);
+    tile.classList.toggle('buffered',!!state.frames[channels[index]]);
+  });
+}
+
+function stopSpectrum() {
+  if(spectrumState){
+    if(spectrumState.playing)spectrumHelp.textContent='Paused. Drag to a wavelength or press Play to continue.';
+    spectrumState.playing=false;
+    if(spectrumState.frame!==null)cancelAnimationFrame(spectrumState.frame);
+    spectrumState.frame=null;
+  }
+  updateSpectrumControls();
+}
+
+function discardSpectrum() {
+  stopSpectrum();
+  spectrumState?.controller.abort(new Error('Spectrum preparation cancelled.'));
+  if(spectrumState)disposeSpectrumFrames(spectrumState.frames);
+  spectrumCanvas.hidden=true;
+  if(spectrumState?.image && regionSurvey?.image===spectrumState.image){
+    setSurveyChannel(spectrumState.image,spectrumState.properties);
+  }
+  spectrumState=null;updateSpectrumControls();
+}
+
+function selectSpectrumChannel(channel,{manual=true}={}) {
+  const state=spectrumState;
+  if(!state?.ready || !comparisonActive || regionMode!=='infrared' || switching ||
+    !Number.isInteger(channel) || !state.channels.includes(channel) || !state.frames[channel])return false;
+  if(manual)stopSpectrum();
+  try{
+    drawSpectrumFrame(state.frames[channel]);state.channel=channel;
+    updateSpectrumControls();updateSourceDescription();return true;
+  }catch(error){stopSpectrum();showError(error);return false;}
+}
+
+function spectrumFrame(now) {
+  const state=spectrumState;
+  if(!state?.playing)return;
+  if(document.hidden || !comparisonActive || regionMode!=='infrared' || state.region!==selectedRegion || switching){stopSpectrum();return;}
+  if(now>=state.nextAt){
+    if(!selectSpectrumChannel(state.channels[(state.channels.indexOf(state.channel)+1)%state.channels.length],{manual:false}))return;
+    state.nextAt=now+125;
+  }
+  if(spectrumState===state && state.playing)state.frame=requestAnimationFrame(spectrumFrame);
+}
+
+function toggleSpectrum() {
+  const state=spectrumState;
+  if(state?.playing){stopSpectrum();return;}
+  if(!state || spectrumPlay.disabled || document.hidden)return;
+  stopPlayback();
+  state.playing=true;state.nextAt=performance.now()+125;
+  spectrumHelp.textContent=`All ${state.channels.length} selected wavelengths buffered. Playing from short to long wavelengths, then looping.`;
+  updateSpectrumControls();state.frame=requestAnimationFrame(spectrumFrame);
+}
+
+async function loadSelectedSpectrum() {
+  if(regionMode!=='infrared' || !selectedRegion || drawingRegion || switching || pairState?.pending || pairState?.historyPending)return false;
+  const region=selectedRegion;
+  discardPreparedObservations();stopSpectrum();
+  preloadProgress.hidden=false;preloadProgress.textContent='Loading infrared sky data…';
+  if(spectrumPreparation){
+    spectrumState?.controller.abort(new Error('Spectrum preparation restarted.'));
+    await spectrumPreparation.catch(()=>{});
+  }
+  if(selectedRegion!==region || regionMode!=='infrared')return false;
+  const properties=await getProperties('spherex');
+  updateSpectrumRangeControls();
+  let channels;
+  try{channels=selectedSpectrumChannels();}catch(error){preloadProgress.hidden=true;spectrumRangeError.textContent=error.message;spectrumRangeError.hidden=false;return false;}
+  if(spectrumState && (spectrumState.region!==region || spectrumState.properties!==properties))discardSpectrum();
+  if(spectrumState){
+    spectrumState.channels=channels;
+    if(!channels.includes(spectrumState.channel))spectrumState.channel=channels[0];
+  }
+  if(spectrumState && channels.every(channel=>spectrumState.frames[channel])){
+    await enterComparison();
+    if(selectedRegion!==region || regionMode!=='infrared' || !comparisonActive)return false;
+    currentMission='spherex';spectrumState.ready=true;spectrumState.image.setOpacity(0);
+    drawSpectrumFrame(spectrumState.frames[spectrumState.channel]);
+    preloadProgress.hidden=true;
+    spectrumHelp.textContent=`All ${channels.length} selected wavelengths buffered. Press Play or drag the spectrum.`;
+    updateSourceDescription();updateMissionControls();return true;
+  }
+  const state=spectrumState || {region,properties,channels,channel:channels.includes(CHANNEL_INDEX)?CHANNEL_INDEX:channels[0],frames:[],playing:false,frame:null,ready:false};
+  state.controller=new AbortController();state.preparing=true;spectrumState=state;
+  const task=prepareSelectedSpectrum(state);spectrumPreparation=task;
+  try{return await task;}finally{if(spectrumPreparation===task)spectrumPreparation=null;}
+}
+
+function drawSpectrumFrame(frame) {
+  paintSpectrumFrame(spectrumCanvas,frame);
+  spectrumCanvas.hidden=false;
+}
+
+async function prepareSelectedSpectrum(state) {
+  let tracker;
+  updateSpectrumControls();
+  try{
+    // Start observing before a fresh layer is created, so no initial tile
+    // request can escape the readiness gate.
+    tracker=observeSurveyTiles(MISSIONS.spherex.url);
+    if(regionSurvey){comparisonMap.removeImageLayer(REGION_SURVEY_LAYER);regionSurvey=null;}
+    if(!await switchRegionSurvey('spherex'))throw new Error('The infrared sky map could not load.');
+    state.controller.signal.throwIfAborted();
+    if(spectrumState!==state || selectedRegion!==state.region || !comparisonActive)return false;
+    state.image=regionSurvey.image;
+    const [width,height]=comparisonMap.getSize(),count=state.channels.length;
+    const size=spectrumFrameSize(width,height,count);
+    if(state.size && (size.width!==state.size.width || size.height!==state.size.height))disposeSpectrumFrames(state.frames);
+    state.frames.forEach((frame,index)=>{if(frame && !state.channels.includes(index)){frame.close?.();delete state.frames[index];}});
+    state.size=size;
+    regionMapElement.append(spectrumCanvas);
+    spectrumCanvas.width=size.width;spectrumCanvas.height=size.height;spectrumCanvas.hidden=false;
+    spectrumCanvas.getContext('2d').fillRect(0,0,size.width,size.height);
+    preloadProgress.hidden=true;
+    const blanks=blankCubeChannels(state.properties);
+    await bufferSpectrumFrames({count:skyWavelengths().length,channels:state.channels,frames:state.frames,signal:state.controller.signal,
+      isBlankChannel:channel=>blanks.has(channel),
+      selectChannel:channel=>{state.image.setOpacity(1);setSurveyChannel(state.image,state.properties,channel);},
+      waitForTiles:()=>waitForSurveyTiles(tracker,{signal:state.controller.signal,
+        isRendering:()=>comparisonMap.view?.wasm?.isRendering?.() ?? false}),
+      captureFrame:(channel,{blank})=>blank?captureBlankSpectrumFrame(size,skyWavelengths()[channel]):captureSpectrumFrame(comparisonMap,size),
+      onProgress:(channel,loaded)=>{
+        state.loadingChannel=channel;
+        spectrumHelp.textContent=`Preparing infrared spectrum: ${loaded}/${count} wavelengths buffered · loading ${skyWavelengths()[channel].toFixed(3)} µm. Play becomes available when every frame is ready.`;
+        updateSpectrumControls();
+      }});
+    state.controller.signal.throwIfAborted();
+    state.ready=true;state.image.setOpacity(0);
+    drawSpectrumFrame(state.frames[state.channel]);
+    spectrumHelp.textContent=`All ${count} wavelengths buffered. Press Play or drag the spectrum; playback uses the loaded frames.`;
+    updateSourceDescription();return true;
+  }catch(error){
+    if(spectrumState===state){
+      state.ready=false;
+      observationLog('Spectrum preparation','error',{message:error.message,channel:state.loadingChannel,
+        buffered:state.frames.filter(Boolean).length});
+      spectrumHelp.textContent=`Preparation stopped: ${error.message} Use Explore infrared to retry; buffered frames are retained.`;
+    }
+    return false;
+  }finally{
+    tracker?.dispose();state.preparing=false;
+    if(spectrumState===state){preloadProgress.hidden=true;updateMissionControls();}
+  }
+}
+
+async function chooseRegionMode(mode) {
+  if(!['time','infrared'].includes(mode) || switching || pairState?.pending || pairState?.historyPending)return false;
+  if(mode===regionMode)return true;
+  if(mode==='time' && selectedRegion?.sizeDegrees>1){
+    regionResult.textContent='Time mode needs a region within 1°. Clear this infrared region, zoom in, and draw a smaller rectangle.';
+    updateMissionControls();return false;
+  }
+  discardSpectrum();discardPreparedObservations();regionMode=mode;
+  if(!selectedRegion)regionResult.textContent=regionSelectionHint();
+  updateMissionControls();
+  if(!selectedRegion || drawingRegion)return true;
+  return mode==='infrared'?loadSelectedSpectrum():loadSelectedObservations();
 }
 
 async function fetchPublishedSurvey() {
@@ -198,7 +566,13 @@ async function getProperties(id) {
 async function refreshPublishedSurvey() {
   const result=await fetchPublishedSurvey(),survey=result.survey;
   const signature=`${survey.url}|${survey.revision}`;
-  if(signature===releaseSignature){describeReleaseCheck(result);return false;}
+  if(signature===releaseSignature){deferredSurveyUpdate=false;describeReleaseCheck(result);return false;}
+  // Discover new releases as usual, but avoid replacing a cube mid-playback.
+  if(spectrumState && comparisonActive && regionMode==='infrared'){
+    deferredSurveyUpdate=true;
+    dataFreshness.textContent=`${survey.release} is available. The current infrared region keeps its loaded map until you return to the whole sky.`;
+    return false;
+  }
   const previous={mission:{...MISSIONS.spherex},properties:metadata.get('spherex'),channel:CHANNEL_INDEX,signature:releaseSignature};
   configureSpherexSurvey(survey);
   switching=true;updateMissionControls();
@@ -208,12 +582,12 @@ async function refreshPublishedSurvey() {
       if(comparisonActive && currentMission==='spherex'){
         const state={region:selectedRegion,id:'spherex',image:null};regionSurvey=state;
         state.image=await applyLayer('spherex',survey.properties,comparisonMap,REGION_SURVEY_LAYER);
-        if(regionSurvey===state && comparisonActive)state.image.setOpacity(1);
+        if(regionSurvey===state && comparisonActive)state.image.setOpacity(surveyOpacity('spherex'));
       }else{
         regionSurvey=null;comparisonMap.removeImageLayer(REGION_SURVEY_LAYER);
       }
     }
-    updateSourceDescription();describeReleaseCheck(result);return true;
+    deferredSurveyUpdate=false;updateSourceDescription();describeReleaseCheck(result);return true;
   }catch(error){
     Object.assign(MISSIONS.spherex,previous.mission);CHANNEL_INDEX=previous.channel;releaseSignature=previous.signature;
     if(previous.properties){
@@ -223,7 +597,7 @@ async function refreshPublishedSurvey() {
         if(comparisonActive && currentMission==='spherex'){
           const state={region:selectedRegion,id:'spherex',image:null};regionSurvey=state;
           state.image=await applyLayer('spherex',previous.properties,comparisonMap,REGION_SURVEY_LAYER);
-          state.image.setOpacity(1);
+          state.image.setOpacity(surveyOpacity('spherex'));
         }
       }catch(restoreError){observationLog('Map restoration','error',{message:restoreError.message});}
     }else metadata.delete('spherex');
@@ -254,24 +628,17 @@ function applyLayer(id, properties, viewer = skyMap, layer = null) {
   return new Promise((resolve, reject) => {
     const options = {
       name: MISSIONS[id].name,
+      // Use the same PNG display transfer in the live sky and buffered crop.
+      ...(id==='spherex'?{imgFormat:'png',colormap:'native',stretch:'linear',
+        minCut:0,maxCut:255,reversed:false,gamma:1,brightness:0,contrast:0,saturation:0,additive:false}:{}),
       opacity: layer ? 0 : 1,
       errorCallback: reject,
       successCallback: hips => {
         try {
           if (layer) hips.setOpacity(0);
-          if (id === 'spherex') {
-            const depth = Number(properties.hips_cube_depth);
-            const low = 299792458 / Number(properties.em_max);
-            const high = 299792458 / Number(properties.em_min);
-            if (!(depth > CHANNEL_INDEX && Number.isFinite(low) && high > low)) {
-              throw new Error('SPHEREx cube metadata is missing or invalid.');
-            }
-            // Same frequency-bin mapping as IRSA's cube example.
-            hips.setFrequency({
-              value: low + (CHANNEL_INDEX + 0.5) / depth * (high - low),
-              unit: 'Hz'
-            });
-          }
+          if (id === 'spherex') setSurveyChannel(hips,properties,
+            viewer===comparisonMap && spectrumState?.preparing && regionMode==='infrared'?spectrumState.channels[0]:CHANNEL_INDEX);
+          if(viewer===skyMap && !layer)baseSurveyImage=hips;
           resolve(hips);
         } catch (error) { reject(error); }
       }
@@ -343,7 +710,7 @@ function togglePlayback() {
 
 function updateFilmstrip() {
   const entries=observationTimeline();
-  const visible=comparisonActive && !!pairState?.ready && entries.length>0;
+  const visible=regionMode==='time' && comparisonActive && !!pairState?.ready && entries.length>0;
   if(playback && (!visible || switching || playback.ids.join(',')!==entries.map(entry=>entry.id).join(',')))stopPlayback();
   updatePlaybackControls();
   filmstrip.hidden=!visible;
@@ -463,16 +830,23 @@ function updateMissionControls() {
       button.title = exposure ? `Observed ${exposure.observedStart}; coverage: ${exposure.coverage || 'not measured'}` : 'Draw a rectangle to load one available observation.';
     }
   });
-  historyButton.hidden = !pairState?.ready;
+  historyButton.hidden = regionMode!=='time' || !pairState?.ready;
   historyButton.disabled = switching || !!pairState?.pending || !!pairState?.historyPending || !!pairState?.historyExhausted;
   historyButton.textContent = pairState?.historyPending ? 'Loading earlier dates…' : pairState?.historyExhausted ? 'No earlier same-band dates' :
     pairState?.historyRetry ? 'Retry earlier dates' : (selectedPair?.observations.length || 0)>1 ? 'Load 10 more dates' : 'Load 10 earlier dates';
   updateFilmstrip();
   updateRegionControls();
+  updateWavelengthControls();
+  updateSpectrumControls();
 }
 
 function updateSourceDescription() {
-  if (isObservation(currentMission)) {
+  if(regionMode==='infrared' && spectrumState && comparisonActive && currentMission==='spherex'){
+    const wavelength=skyWavelengths()[spectrumState.channel];
+    const release=metadata.get('spherex').creator_did.match(/\/DR(\d+)\/cube$/i)?.[1];
+    surveyCredit.textContent=`SPHEREx${release?` DR${release}`:''} · ${wavelength.toFixed(3)} µm · NASA/Caltech/IPAC`;
+    surveyCredit.href=MISSIONS.spherex.link;surveyCredit.title='Selected region of the infrared sky mosaic; wavelength sequence, not a time sequence.';
+  }else if (isObservation(currentMission)) {
     const exposure = selectedPair.observations[observationIndex(currentMission)];
     surveyCredit.textContent = `SPHEREx · ${exposure.observedStart.replace('T', ' ').replace('Z', ' UTC')} · NASA/Caltech/IPAC`;
     surveyCredit.href = exposure.downloadUrl;
@@ -486,6 +860,7 @@ function updateSourceDescription() {
 }
 
 async function switchMission(id, {fromPlayback=false}={}) {
+  if(regionMode==='infrared' && comparisonActive && id!=='spherex')return false;
   if(!fromPlayback)stopPlayback();
   if (switching || !skyMap) return false;
   if (isObservation(id)) {
@@ -561,7 +936,7 @@ async function switchRegionSurvey(id) {
     await fitComparisonRegion();
     if (selectedRegion !== region || !comparisonActive) return false;
     pairState?.frames.forEach(frame => frame.image.setOpacity(0));
-    regionSurvey.image.setOpacity(1);
+    regionSurvey.image.setOpacity(surveyOpacity(id));
     currentMission = id;
     updateSourceDescription();
     status.hidden = true;
@@ -599,6 +974,9 @@ async function verifyImageDisplay(id) {
 }
 
 function leaveComparison() {
+  stopSpectrum();
+  if(spectrumState?.preparing)spectrumState.controller.abort(new Error('Return to Infrared to finish preparing the spectrum.'));
+  spectrumCanvas.hidden=true;
   stopPlayback();
   const wasActive = comparisonActive;
   comparisonActive = false;
@@ -609,6 +987,7 @@ function leaveComparison() {
   coordinateFields.disabled = !skyMap;
   backToSkyButton.hidden = true;
   updateFilmstrip();
+  updateSpectrumControls();
   clearCursorCoordinates();
 }
 
@@ -618,6 +997,7 @@ async function enterComparison() {
   const region = selectedRegion;
   regionView.hidden = false;
   comparisonActive = true;
+  updateSpectrumControls();
   document.body.classList.add('region-comparison');
   document.getElementById('coordinate-panel').open = false;
   document.getElementById('sky-map').inert = true;
@@ -666,6 +1046,11 @@ function sizeComparisonFrame() {
 let fitScheduled = false;
 function scheduleRegionFit() {
   if (!comparisonActive || fitScheduled) return;
+  stopSpectrum();
+  if(spectrumState?.preparing){
+    spectrumState.controller.abort(new Error('The view resized. Prepare the spectrum again.'));
+    disposeSpectrumFrames(spectrumState.frames);
+  }
   fitScheduled = true;
   requestAnimationFrame(() => {
     fitScheduled = false;
@@ -785,11 +1170,24 @@ function updateRegionControls() {
   drawRegionButton.textContent = drawingRegion ? 'Cancel drawing' : 'Draw rectangle';
   drawRegionButton.setAttribute('aria-pressed', String(drawingRegion));
   clearRegionButton.hidden = !selectedRegion;
-  loadObservationButton.disabled = !selectedRegion || drawingRegion || switching || !!pairState?.pending || !!pairState?.historyPending;
+  loadObservationButton.disabled = !selectedRegion || selectedRegion.sizeDegrees>1 || drawingRegion || switching || !!pairState?.pending || !!pairState?.historyPending;
   loadObservationButton.textContent = pairState?.pending ? 'Loading observation…' : 'Load one observation';
+  loadObservationButton.hidden=regionMode!=='time';
+  loadSpectrumButton.hidden=regionMode!=='infrared';
+  loadSpectrumButton.disabled=!selectedRegion || drawingRegion || switching || !!spectrumState?.preparing;
+  loadSpectrumButton.textContent=spectrumState?.preparing?'Preparing spectrum…':'Explore infrared';
+  regionModeFields.disabled=switching || !!pairState?.pending || !!pairState?.historyPending;
+  regionModeTime.checked=regionMode==='time';regionModeInfrared.checked=regionMode==='infrared';
+  updateSpectrumRangeControls();
+}
+
+function regionSelectionHint() {
+  return regionMode==='infrared'?'Drag a rectangle to explore its infrared spectrum. Large sky regions are supported.':
+    'Zoom in, then drag a rectangle that fits within 1° for Time mode.';
 }
 
 function clearSelectedRegion() {
+  discardSpectrum();
   selectionSequence += 1;
   if (drawingRegion) { skyMap.fire('default'); skyMap.showReticle(false); }
   drawingRegion = false;
@@ -801,8 +1199,8 @@ function clearSelectedRegion() {
   regionOverlay?.removeAll();
   regionOverlay?.hide();
   preloadProgress.hidden = true;
-  regionResult.textContent = 'Zoom in, then drag a rectangle that fits within 1°.';
-  updateRegionControls();
+  regionResult.textContent = regionSelectionHint();
+  updateMissionControls();
 }
 
 async function startRegionSelection() {
@@ -811,7 +1209,7 @@ async function startRegionSelection() {
   clearSelectedRegion();
   const sequence = ++selectionSequence;
   drawingRegion = true;
-  regionResult.textContent = 'Drag a rectangle, then release to load one available observation. Escape cancels.';
+  regionResult.textContent = `Drag a rectangle, then release to explore ${regionMode==='infrared'?'its infrared spectrum':'dated observations'}. Escape cancels.`;
   updateRegionControls();
   try {
     await skyMap.select('rect', async rect => {
@@ -820,7 +1218,7 @@ async function startRegionSelection() {
       setTimeout(() => skyMap.showReticle(false), 0);
       try {
         selectedRegion = {
-          ...regionFromRectangle(rect, (...args) => skyMap.pix2world(...args)),
+          ...regionFromRectangle(rect, (...args) => skyMap.pix2world(...args),{maxSizeDegrees:regionMode==='infrared'?170:1}),
           aspect: rect.w / rect.h, rotation: skyMap.getRotation()
         };
         if (!regionOverlay) {
@@ -833,7 +1231,9 @@ async function startRegionSelection() {
         const {ra,dec} = selectedRegion.position;
         regionResult.textContent = `Locked region · RA ${ra.toFixed(5)}°, Dec ${dec.toFixed(5)}°`;
         await enterComparison();
-        if (sequence === selectionSequence && selectedRegion) void loadSelectedObservations();
+        if (sequence === selectionSequence && selectedRegion) {
+          if(regionMode==='infrared')void loadSelectedSpectrum();else void loadSelectedObservations();
+        }
       } catch (error) {
         clearSelectedRegion();
         regionResult.textContent = error.message;
@@ -848,7 +1248,7 @@ async function startRegionSelection() {
 }
 
 async function loadSelectedObservations() {
-  if (!selectedRegion || drawingRegion || switching || pairState?.pending) return false;
+  if (regionMode!=='time' || !selectedRegion || selectedRegion.sizeDegrees>1 || drawingRegion || switching || pairState?.pending) return false;
   const region = selectedRegion;
   await enterComparison();
   if (selectedRegion !== region || !comparisonActive) return false;
@@ -935,7 +1335,7 @@ async function readArchiveResponse(response, step) {
 
 async function loadEarlierObservations({newer=false}={}) {
   const state=pairState, selection=selectedPair;
-  if (!selectedRegion || !state?.ready || state.pending || state.historyPending || (!newer && state.historyExhausted) || switching) return false;
+  if (regionMode!=='time' || !selectedRegion || !state?.ready || state.pending || state.historyPending || (!newer && state.historyExhausted) || switching) return false;
   const anchor=newer?(state.newerAnchor || selection.observations.reduce((latest,exposure)=>
     Date.parse(exposure.observedStart)>Date.parse(latest.observedStart)?exposure:latest)):
     (state.historyAnchor || selection.observations[isObservation(currentMission)?observationIndex(currentMission):0]);
@@ -1032,13 +1432,25 @@ filmstripPlay.addEventListener('click',togglePlayback);
 observationScrubber.addEventListener('input',scrubObservation);
 observationScrubber.addEventListener('pointerdown',stopPlayback);
 document.addEventListener('visibilitychange',()=>{
-  if(document.hidden)stopPlayback();
+  if(document.hidden){stopPlayback();stopSpectrum();}
   else if(Date.now()-lastUpdateCheck>=86400000)void checkForDataUpdates();
 });
 window.setInterval(()=>{if(!document.hidden)void checkForDataUpdates();},86400000);
 clearRegionButton.addEventListener('click', clearSelectedRegion);
 loadObservationButton.addEventListener('click', loadSelectedObservations);
-backToSkyButton.addEventListener('click', () => { leaveComparison(); updateSourceDescription(); updateMissionControls(); });
+loadSpectrumButton.addEventListener('click',()=>{void loadSelectedSpectrum().catch(showError);});
+regionModeTime.addEventListener('change',()=>{if(regionModeTime.checked)void chooseRegionMode('time').catch(showError);});
+regionModeInfrared.addEventListener('change',()=>{if(regionModeInfrared.checked)void chooseRegionMode('infrared').catch(showError);});
+spectrumPlay.addEventListener('click',toggleSpectrum);
+spectrumScrubber.addEventListener('input',()=>{selectSpectrumChannel(Number(spectrumScrubber.value));});
+spectrumScrubber.addEventListener('pointerdown',stopSpectrum);
+spectrumRangeFrom.addEventListener('change',changeSpectrumRange);
+spectrumRangeTo.addEventListener('change',changeSpectrumRange);
+prepareSpectrumRange.addEventListener('click',()=>{void loadSelectedSpectrum().catch(showError);});
+backToSkyButton.addEventListener('click', () => {
+  leaveComparison();updateSourceDescription();updateMissionControls();
+  if(deferredSurveyUpdate)void checkForDataUpdates();
+});
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && drawingRegion) clearSelectedRegion();
 });
@@ -1049,7 +1461,7 @@ for (const name of ['pointerdown','mousedown','touchstart','wheel','dblclick','c
   }, {capture:true,passive:false});
 }
 window.addEventListener('keydown', event => {
-  if(event.target===observationScrubber)return;
+  if(event.target===observationScrubber || event.target===spectrumScrubber)return;
   if (comparisonActive && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','-','=',' '].includes(event.key) && !(event.key === ' ' && event.target.tagName === 'BUTTON')) {
     event.preventDefault(); event.stopImmediatePropagation();
   }

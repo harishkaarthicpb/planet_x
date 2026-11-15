@@ -43,3 +43,9 @@ To reproduce the dependency change after downloading the original distribution:
 node scripts/patch-aladin-sip.cjs original-aladin.js vendor/aladin-lite-3.8.2.js
 node --test
 ```
+
+The application also compensates for the pinned renderer's plane-zero HiPS
+cube filenames through `hips-cube-tiles.mjs`. This does not modify the vendor
+bundle: registered SPHEREx requests for `NpixN_0.png` become `NpixN.png`, while
+other band suffixes stay unchanged. See `test/hips-cube-tiles.test.mjs` and
+`OBSERVATION_DEBUG.md` for the archive checks and documented empty-band handling.

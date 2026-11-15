@@ -12,7 +12,9 @@ const routes = {
   '/script.js': ['script.js', 'text/javascript; charset=utf-8'],
   '/vendor/aladin-lite-3.8.2.js': ['vendor/aladin-lite-3.8.2.js', 'text/javascript; charset=utf-8'],
   '/sky-region.mjs': ['sky-region.mjs', 'text/javascript; charset=utf-8'],
-  '/fits-preview.mjs': ['fits-preview.mjs', 'text/javascript; charset=utf-8']
+  '/fits-preview.mjs': ['fits-preview.mjs', 'text/javascript; charset=utf-8'],
+  '/spectrum-buffer.mjs': ['spectrum-buffer.mjs', 'text/javascript; charset=utf-8'],
+  '/hips-cube-tiles.mjs': ['hips-cube-tiles.mjs', 'text/javascript; charset=utf-8']
 };
 
 const server = http.createServer(async (request, response) => {

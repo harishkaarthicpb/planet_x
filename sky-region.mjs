@@ -22,7 +22,10 @@ function contains(polygon, points) {
   });
 }
 
-export function regionFromCorners(corners) {
+export function regionFromCorners(corners, {maxSizeDegrees=1}={}) {
+  if(!Number.isFinite(maxSizeDegrees) || maxSizeDegrees<=0 || maxSizeDegrees>170){
+    throw new Error('The region size limit must be between 0° and 170°.');
+  }
   if (!Array.isArray(corners) || corners.length !== 4 || corners.some(p =>
     !Array.isArray(p) || p.length !== 2 || p.some(n => typeof n !== 'number' || !Number.isFinite(n)) ||
     p[0] < 0 || p[0] >= 360 || Math.abs(p[1]) > 90)) {
@@ -31,18 +34,18 @@ export function regionFromCorners(corners) {
   const vectors = corners.map(vector);
   const center = normalize(vectors.reduce((sum, v) => sum.map((n, i) => n + v[i]), [0, 0, 0]));
   const radius = Math.max(...vectors.map(v => Math.atan2(Math.hypot(...cross(center, v)), dot(center, v)) / RAD));
-  // Circumscribed square fits any detector orientation. Padding accounts for
-  // the small TAN projection distortion in a sub-degree region.
+  // A padded diameter bounds the corners. The viewer refits their projected
+  // positions, including distortion in large infrared regions.
   const sizeDegrees = Math.max(0.02, 2 * radius * 1.05);
-  if (!Number.isFinite(sizeDegrees) || sizeDegrees > 1) {
-    throw new Error('Zoom in and draw a smaller rectangle; the region must fit within 1°.');
+  if (!Number.isFinite(sizeDegrees) || sizeDegrees > maxSizeDegrees) {
+    throw new Error(`Zoom in and draw a smaller rectangle; the region must fit within ${maxSizeDegrees}°.`);
   }
   if (radius < 1e-5 || !contains(vectors, vectors)) throw new Error('Draw a rectangle with a non-zero area.');
   const [ra, dec] = coordinates(center);
   return { corners, position: { ra, dec }, sizeDegrees };
 }
 
-export function regionFromRectangle(rect, pix2world) {
+export function regionFromRectangle(rect, pix2world, options) {
   const { x, y, w, h } = rect;
   if (![x, y, w, h].every(Number.isFinite) || w < 5 || h < 5) {
     throw new Error('Drag a rectangle at least 5 pixels wide and high.');
@@ -51,7 +54,7 @@ export function regionFromRectangle(rect, pix2world) {
     const world = pix2world(px, py, 'ICRS');
     return world && [((world[0] % 360) + 360) % 360, world[1]];
   });
-  return regionFromCorners(corners);
+  return regionFromCorners(corners,options);
 }
 
 export function footprintContainsRegion(stcs, corners) {

@@ -1,5 +1,119 @@
 # Current simplified rectangle flow
 
+## Rectangle modes: Time or Infrared
+
+The region tool offers mutually exclusive Time and Infrared radio choices.
+Infrared accepts large rectangles (up to a padded angular diameter of 170° to
+stay within the TAN projection's hemisphere). Time keeps its 1° limit both in
+the browser and on the archive API. Switching a large infrared rectangle to
+Time explains that a smaller selection is needed and leaves its spectrum intact.
+Drawing a rectangle starts the chosen mode; changing modes on an existing
+rectangle keeps its geometry and replaces the active exploration. Time retains
+the dated-observation pipeline. Infrared cancels and removes dated FITS frames,
+loads only the SPHEREx mosaic in the locked crop, and hides the source/date
+switcher and time filmstrip. It makes no observation search or cutout requests.
+
+Infrared has a band strip, wavelength scrubber and Play/Pause button. Before
+enabling playback or scrubbing, it prepares every selected wavelength for the
+locked rectangle and shows the number of buffered bands. For each band it
+waits for actual survey image downloads, response bodies, bitmap decoding,
+cube-worker messages, and native rendering to settle, then captures a decoded
+ImageBitmap. The intermediate loading tiles are covered by a canvas. Browser
+network/decoder hooks exist only during preparation and are restored afterward.
+
+Frame capture now copies the displayed Aladin image canvas directly, composited
+onto opaque black, rather than round-tripping through the PNG export API.
+Every playback/scrub redraw replaces the previous frame on opaque black before
+drawing. This prevents transparent pixels accumulating brightness across frames.
+Live and cropped SPHEREx layers explicitly share the same native PNG colormap,
+linear 0–255 cuts, gamma, tone and non-additive blend settings. Pixel-compositing
+regressions compare a transparent source against its cached display and repeat
+it 100 times to verify brightness remains constant. The requested headless
+browser comparison was not approved, so this change has no new WebGL screenshot
+verification.
+A centered loading card shows a spinner, progress bar, ready-band count,
+percentage, and current wavelength. It appears during initial map setup too,
+and disappears on completion, cancellation, or an error.
+
+The From/To dropdowns use the release's actual wavelengths in micrometers.
+Their inclusive interval can be set before drawing; the controls move into
+the spectrum player when exploring a rectangle. The default is the full
+range. Changing endpoints pauses playback and interrupts ongoing preparation;
+`Prepare selected range` applies the interval without redrawing the rectangle.
+Only its selected global channel indices are prepared, shown in the band strip,
+scrubbed, and looped. Progress and preview memory sizing use the selected band
+count. Reversed endpoints are rejected. An already cached interval is ready
+immediately, and a single-band interval displays a still frame with Play disabled.
+Time mode and the whole-sky wavelength slider remain independent.
+The readiness tracker includes only HiPS tile and Allsky image paths, rather
+than every request below the survey URL: optional MOC, preview and metadata
+404s do not abort a spectrum. A required tile failure includes the actual URL
+in the displayed error and console diagnostics.
+
+The reported `_0.png` errors were real tile naming errors, not optional
+metadata errors. IRSA serves plane zero as `NpixN.png`, without `_0`, while
+planes 1–101 retain their suffixes. `hips-cube-tiles.mjs` normalizes only those
+plane-zero tile/Allsky URLs for registered SPHEREx services, for both image and
+fetch transports. It does not offset channel indices. `hips_cube_firstframe`
+is an initial display preference, not a numbering offset. Live HEAD checks on
+2026-11-15 confirmed `Npix89.png` and `Npix89_1.png` return 200 while
+`Npix89_0.png` returns 404; the reported order-5 `Npix5716.png`, `_1.png` and
+`_101.png` also return 200.
+
+The official properties explicitly document zero-based frames 50 and 51 as
+blank; live checks confirmed their PNGs are absent. Preparation represents
+these as labelled "No archive data" frames and never requests their missing
+tiles. This classification follows the explicit metadata, not arbitrary 404s.
+The live sky slider also labels and hides these empty bands. All other missing
+tiles remain preparation errors. Tests cover the reported URLs, all 102 frame
+indices, hook composition, and blank-frame handling without reusing stale data.
+
+Once every band is buffered, playback draws only these local frames at eight
+frames per second. Scrubbing also draws cached frames. Neither operation
+changes the native HiPS frequency, downloads tiles, or refits the camera.
+Decoded previews preserve the rectangle aspect ratio and use a 96 MiB frame
+pixel budget across all channels, with a maximum side of 1,024 pixels. This
+limits preview resolution for very large views while keeping playback local.
+The source science data and the full-resolution live sky map are unchanged.
+
+Tile or capture errors keep Play disabled. Retrying preparation retains the
+completed frames for the same region and capture dimensions. Leaving cancels
+in-progress preparation; clearing the region or changing modes closes decoded
+bitmaps. Cancellation also closes a capture that finishes late. A resize during
+preparation cancels it and invalidates partial frames so a retry stays aligned.
+Manual scrubbing, hiding the page, resizing, changing modes, clearing the
+rectangle, and returning to the whole sky stop spectrum playback. The global
+sky wavelength is preserved independently. Newly discovered map releases are
+reported but deferred while an infrared region is active, to avoid changing
+its cube during a sweep.
+
+Controller and buffer tests cover rectangle dispatch, exclusive modes, full
+preload gating, cached-only playback, asynchronous tile readiness, retries,
+memory bounds, cancellation, looping, and bitmap cleanup.
+Browser/WebGL appearance and tile loading have not been live verified.
+
+## Sky wavelength slider
+
+The whole-sky SPHEREx view has an infrared wavelength range slider. Its channel
+count and wavelength labels come from the loaded release's `hips_cube_depth`
+and `data_cube_crval3_arr`, with the existing initial selection near 3.293 µm.
+Dragging switches the resident HiPS cube's frequency bin at most ten times per
+second; releasing the slider commits the final band immediately. It does not
+replace the layer, move the camera, or request observation FITS downloads.
+Aladin fetches the selected plane's visible tiles directly from the survey.
+
+The slider is hidden for Gaia and locked region comparisons. Its selection
+survives switching sources and is preserved at the nearest compatible physical
+wavelength when the official map release changes. A cached SPHEREx region
+survey starts at the selected channel; Infrared mode can sweep it independently.
+Dated FITS exposures, earlier/newer-date
+queries, and time playback remain independent of the sky wavelength. The UI
+explicitly states that dated observations use their usual bands.
+
+Controller tests cover all 102 plane indices, metadata labels, rapid input,
+camera/layer preservation, source switching, release upgrades, and independent
+observation searches. Browser/WebGL interaction has not been live verified.
+
 ## Automatic archive updates
 
 On opening the app and daily while the page is visible, the viewer checks

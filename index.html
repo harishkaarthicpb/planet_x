@@ -13,6 +13,12 @@
     <main id="sky-map" aria-label="SPHEREx infrared sky map"></main>
     <section id="region-view" aria-label="Locked observation comparison" hidden>
       <div id="region-map"></div>
+      <div id="spectrum-loading" hidden>
+        <p class="spectrum-loading-title" role="status"><span class="spectrum-spinner" aria-hidden="true"></span>Loading infrared spectrum…</p>
+        <progress id="spectrum-loading-progress" max="102" value="0" aria-label="Infrared wavelengths prepared"></progress>
+        <p id="spectrum-loading-count">0 of 102 wavelengths ready</p>
+        <small id="spectrum-loading-detail">Preparing the selected region. Playback will be available when loading finishes.</small>
+      </div>
     </section>
     <details id="coordinate-panel" open>
       <summary>Sky coordinate search</summary>
@@ -50,17 +56,46 @@
         <p id="coordinate-result" role="status" aria-live="polite"></p>
         <button id="marker-toggle" type="button" aria-pressed="true" hidden>Hide marker</button>
       </form>
-      <section id="region-panel" aria-label="Select a region for one available observation">
+      <section id="region-panel" aria-label="Select a region to explore">
         <h2>Explore a region</h2>
+        <fieldset id="region-mode" aria-describedby="region-mode-help">
+          <legend>Explore the rectangle through</legend>
+          <label><input type="radio" name="region-mode" id="region-mode-time" value="time" checked> Time</label>
+          <label><input type="radio" name="region-mode" id="region-mode-infrared" value="infrared"> Infrared</label>
+        </fieldset>
+        <p id="region-mode-help" class="region-note">Choose one mode, then draw a rectangle. Infrared supports large regions; Time needs a region within 1°.</p>
+        <div id="region-spectrum-range-slot">
+          <fieldset id="spectrum-range-controls" hidden>
+            <legend>Infrared wavelength range</legend>
+            <div class="spectrum-range-fields">
+              <label for="spectrum-range-from">From (µm)<select id="spectrum-range-from" disabled></select></label>
+              <label for="spectrum-range-to">To (µm)<select id="spectrum-range-to" disabled></select></label>
+            </div>
+            <p id="spectrum-range-summary">Choose fewer bands for faster loading.</p>
+            <p id="spectrum-range-error" role="alert" hidden></p>
+            <button id="prepare-spectrum-range" type="button" disabled>Prepare selected range</button>
+          </fieldset>
+        </div>
         <button id="draw-region" type="button" disabled>Draw rectangle</button>
         <button id="clear-region" type="button" hidden>Clear region</button>
-        <p id="region-result" role="status">Zoom in, then drag a rectangle that fits within 1°.</p>
+        <p id="region-result" role="status">Zoom in, then drag a rectangle that fits within 1° for Time mode.</p>
         <button id="load-observation" type="button" disabled>Load one observation</button>
+        <button id="load-spectrum" type="button" disabled hidden>Explore infrared</button>
         <button id="back-to-sky" type="button" hidden>Back to whole sky</button>
-        <p class="region-note">Loads the newest usable SPHEREx image returned for the region center. Earlier-date searches keep the same detector band and one image per UTC day. Missing coverage stays blank.</p>
+        <p id="region-mode-note" class="region-note">Time loads dated SPHEREx observations, keeping the same detector band and one image per UTC day. Infrared plays the sky mosaic through its wavelength bands.</p>
         <p id="data-freshness" role="status" aria-live="polite">Checking the published SPHEREx map when the viewer loads…</p>
       </section>
     </details>
+    <section id="wavelength-panel" aria-label="SPHEREx sky wavelength" hidden>
+      <div class="wavelength-heading">
+        <label for="wavelength-slider">Infrared wavelength</label>
+        <output id="wavelength-value" for="wavelength-slider"></output>
+      </div>
+      <input id="wavelength-slider" type="range" min="0" max="101" step="1" value="62"
+        aria-describedby="wavelength-help" disabled>
+      <div class="wavelength-scale" aria-hidden="true"><span id="wavelength-min"></span><span id="wavelength-max"></span></div>
+      <small id="wavelength-help">Changes the sky map only. Dated observations use their usual bands.</small>
+    </section>
     <p id="status" role="status" aria-live="polite">Loading SPHEREx sky…</p>
     <p id="preload-progress" role="status" aria-live="polite" hidden></p>
     <div id="mission-switch" role="group" aria-label="Sky data source">
@@ -82,6 +117,17 @@
       <input id="observation-scrubber" type="range" min="0" max="0" step="1" value="0"
         aria-describedby="filmstrip-help" disabled>
       <small id="filmstrip-help">Load earlier dates to scrub through observations.</small>
+    </section>
+    <section id="spectrum-player" aria-label="Selected region infrared spectrum" hidden>
+      <div id="player-spectrum-range-slot"></div>
+      <div class="filmstrip-heading">
+        <label for="spectrum-scrubber">Infrared spectrum</label>
+        <output id="spectrum-value" for="spectrum-scrubber" aria-live="off"></output>
+        <button id="spectrum-play" type="button" aria-label="Play spectrum" aria-pressed="false" disabled>▶ Play</button>
+      </div>
+      <div id="spectrum-bands" aria-hidden="true"></div>
+      <input id="spectrum-scrubber" type="range" min="0" max="101" step="1" value="62" disabled aria-describedby="spectrum-help">
+      <small id="spectrum-help">Same region, different wavelengths. This is a sky mosaic, not a time sequence.</small>
     </section>
     <div id="cursor-coordinates" aria-label="Cursor coordinates in equatorial ICRS" aria-live="off"
       title="Sky coordinates under your cursor, in ICRS degrees">RA — · Dec — · ICRS</div>

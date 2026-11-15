@@ -2,6 +2,7 @@ import { regionFromRectangle, angularSeparationDegrees } from './sky-region.mjs'
 import { sampleFitsPreview } from './fits-preview.mjs';
 import { observeSurveyTiles, waitForSurveyTiles, spectrumFrameSize, captureSpectrumFrame, captureBlankSpectrumFrame, bufferSpectrumFrames, disposeSpectrumFrames, paintSpectrumFrame } from './spectrum-buffer.mjs';
 import { registerCubeTileRoot, blankCubeChannels } from './hips-cube-tiles.mjs';
+import { surveyDates, compareSurveyDates } from './survey-dates.mjs';
 
 // Pinned Aladin 3.8.2 with its SIP polynomial evaluator corrected locally.
 // See vendor/README.md for the reproduction and dependency patch.
@@ -21,6 +22,21 @@ const MISSIONS = {
     credit: 'Gaia DR3 · ESA/Gaia/DPAC · S. Moreira & A. Moitinho',
     link: 'https://skies.esac.esa.int/Gaia/dr3/RGB/',
     description: 'Gaia DR3 BP/G/RP source-flux map. Sandro Moreira, André Moitinho; CC BY-NC 3.0 IGO.'
+  },
+  dss2: {
+    name: 'DSS2 Color',
+    // MAST's official mirror, listed at https://aladin.cds.unistra.fr/.
+    url: 'https://stpubdata.s3.us-east-1.amazonaws.com/mast/skybackgrounds/DSSColor',
+    credit: 'DSS2 Color · STScI/NASA · CDS',
+    link: 'https://archive.stsci.edu/dss/',
+    description: 'Optical color composite from historical DSS2 plates, served by MAST. Colors synthesized by CDS.'
+  },
+  wise: {
+    name: 'WISE Color',
+    url: 'https://irsa.ipac.caltech.edu/data/hips/CDS/AllWISE/RGB-W4-W2-W1',
+    credit: 'WISE Color · NASA/JPL-Caltech/UCLA · CDS',
+    link: 'https://irsa.ipac.caltech.edu/Missions/wise.html',
+    description: 'Archived WISE infrared color composite: red W4 (22 µm), green W2 (4.6 µm), blue W1 (3.4 µm). Served by NASA/IPAC IRSA.'
   }
 };
 export const observationDiagnostics = [];
@@ -48,6 +64,7 @@ const wavelengthMax = document.getElementById('wavelength-max');
 let releaseSignature = null;
 let deferredSurveyUpdate = false;
 let checkingUpdates = false;
+let publishedSurveyCheck=null;
 let lastUpdateCheck = Date.now();
 const status = document.getElementById('status');
 const toolsToggle = document.getElementById('tools-toggle');
@@ -71,7 +88,13 @@ const observationScrubber = document.getElementById('observation-scrubber');
 const filmstripDate = document.getElementById('filmstrip-date');
 const filmstripHelp = document.getElementById('filmstrip-help');
 const filmstripPlay = document.getElementById('filmstrip-play');
+const hiddenObservations = document.getElementById('hidden-observations');
+const hiddenObservationList = document.getElementById('hidden-observation-list');
+const hiddenObservationCount = document.getElementById('hidden-observation-count');
+const restoreObservations = document.getElementById('restore-observations');
 let filmstripSignature = '';
+let hiddenFilmstripSignature = '';
+let hiddenObservationButtons = [];
 let filmstripTiles = [];
 let scrubbedObservationId = null;
 let filmstripDrag = null;
@@ -135,6 +158,7 @@ let preloadSequence = 0;
 let baseMission = null;
 let regionSurvey = null;
 const REGION_SURVEY_LAYER = 'planetx-region-survey';
+const regionSurveys = new Map();
 
 let searchMarkerCatalog = null;
 let markerVisible = false;
@@ -243,13 +267,15 @@ function setSkyChannel(channel) {
     setSurveyChannel(baseSurveyImage,properties,channel);
     baseSurveyImage.setOpacity(surveyOpacity('spherex',channel));
     // Keep a cached survey crop in sync; dated FITS frames are independent.
-    if(regionSurvey?.id==='spherex' && regionSurvey.image)setSurveyChannel(regionSurvey.image,properties,channel);
+    const crop=regionSurveys.get('spherex');
+    if(crop?.image)setSurveyChannel(crop.image,properties,channel);
     CHANNEL_INDEX=channel;updateWavelengthDescription();updateSourceDescription();
     updateWavelengthControls();return true;
   }catch(error){
     try{setSurveyChannel(baseSurveyImage,properties,previous);
       baseSurveyImage.setOpacity(surveyOpacity('spherex',previous));
-      if(regionSurvey?.id==='spherex' && regionSurvey.image)setSurveyChannel(regionSurvey.image,properties,previous);
+      const crop=regionSurveys.get('spherex');
+      if(crop?.image)setSurveyChannel(crop.image,properties,previous);
     }catch{/* Preserve the original error. */}
     updateWavelengthControls();showError(error);return false;
   }
@@ -466,7 +492,7 @@ async function prepareSelectedSpectrum(state) {
     // Start observing before a fresh layer is created, so no initial tile
     // request can escape the readiness gate.
     tracker=observeSurveyTiles(MISSIONS.spherex.url);
-    if(regionSurvey){comparisonMap.removeImageLayer(REGION_SURVEY_LAYER);regionSurvey=null;}
+    discardRegionSurveys();
     if(!await switchRegionSurvey('spherex'))throw new Error('The infrared sky map could not load.');
     state.controller.signal.throwIfAborted();
     if(spectrumState!==state || selectedRegion!==state.region || !comparisonActive)return false;
@@ -534,15 +560,20 @@ async function fetchPublishedSurvey() {
 }
 
 function describeReleaseCheck(result) {
+  publishedSurveyCheck=result;
   const release=result.survey.release;
   dataFreshness.textContent=result.stale?`${release} retained; release check is temporarily unavailable.`:
     `${release} · release checked ${new Date(result.checkedAt).toLocaleString()} · new observation batches are checked daily while this page is open.`;
   if(result.newerAdvertised)dataFreshness.textContent+=' A newer map is published but needs a compatibility update.';
   else if(result.warnings?.length)dataFreshness.textContent+=' Full release discovery is temporarily incomplete.';
+  updateSurveyDates();
 }
 
 async function getProperties(id) {
-  if (metadata.has(id)) return metadata.get(id);
+  // Revalidate the DSS2 and WISE services each time they are selected, so a
+  // newer published map definition is used rather than a bundled snapshot.
+  const revalidate=id==='dss2' || id==='wise';
+  if (metadata.has(id) && !revalidate) return metadata.get(id);
   if(id==='spherex'){
     try{
       const result=await fetchPublishedSurvey();
@@ -551,7 +582,7 @@ async function getProperties(id) {
     }catch(error){observationLog('SPHEREx release check','unavailable',{message:error.message});}
   }
   const response = await fetch(`${MISSIONS[id].url}/properties`, {
-    signal: AbortSignal.timeout(15000),cache:'no-store'
+    signal: AbortSignal.timeout(15000),...(id==='spherex'?{cache:'no-store'}:revalidate?{cache:'no-cache'}:{})
   });
   if (!response.ok) throw new Error(`${MISSIONS[id].name} returned HTTP ${response.status}`);
   const properties = Object.fromEntries((await response.text()).split('\n')
@@ -565,6 +596,16 @@ async function getProperties(id) {
   }
   if (id === 'gaia' && properties.creator_did !== 'ivo://ESAVO/P/GAIA/DR3-RGB') {
     throw new Error('The Gaia service did not return the expected DR3 dataset.');
+  }
+  if(id==='dss2' && (properties.creator_did!=='ivo://CDS/P/DSS2/color' ||
+    properties.dataproduct_type!=='image' || properties.dataproduct_subtype!=='color' ||
+    properties.hips_frame!=='equatorial' || !properties.hips_tile_format.split(/\s+/).includes('jpeg'))){
+    throw new Error('The MAST service did not return the expected DSS2 color survey.');
+  }
+  if(id==='wise' && (properties.creator_did!=='ivo://CDS/P/allWISE/color' ||
+    properties.dataproduct_type!=='image' || properties.dataproduct_subtype!=='color' ||
+    properties.hips_frame!=='equatorial' || !properties.hips_tile_format.split(/\s+/).includes('jpeg'))){
+    throw new Error('The IRSA service did not return the expected WISE color survey.');
   }
   if(id==='spherex'){
     configureSpherexSurvey({url:MISSIONS.spherex.url,properties});
@@ -589,13 +630,17 @@ async function refreshPublishedSurvey() {
   switching=true;updateMissionControls();
   try{
     if(baseMission==='spherex')await applyLayer('spherex',survey.properties);
-    if(regionSurvey?.id==='spherex'){
+    if(regionSurveys.has('spherex')){
       if(comparisonActive && currentMission==='spherex'){
-        const state={region:selectedRegion,id:'spherex',image:null};regionSurvey=state;
+        const state={region:selectedRegion,id:'spherex',image:null,properties:survey.properties,
+          url:MISSIONS.spherex.url,layer:REGION_SURVEY_LAYER};regionSurvey=state;
+        regionSurveys.set('spherex',state);
         state.image=await applyLayer('spherex',survey.properties,comparisonMap,REGION_SURVEY_LAYER);
         if(regionSurvey===state && comparisonActive)state.image.setOpacity(surveyOpacity('spherex'));
       }else{
-        regionSurvey=null;comparisonMap.removeImageLayer(REGION_SURVEY_LAYER);
+        regionSurveys.delete('spherex');
+        if(regionSurvey?.id==='spherex')regionSurvey=null;
+        comparisonMap.removeImageLayer(REGION_SURVEY_LAYER);
       }
     }
     deferredSurveyUpdate=false;updateSourceDescription();describeReleaseCheck(result);return true;
@@ -606,7 +651,9 @@ async function refreshPublishedSurvey() {
       try{
         if(baseMission==='spherex')await applyLayer('spherex',previous.properties);
         if(comparisonActive && currentMission==='spherex'){
-          const state={region:selectedRegion,id:'spherex',image:null};regionSurvey=state;
+          const state={region:selectedRegion,id:'spherex',image:null,properties:previous.properties,
+            url:MISSIONS.spherex.url,layer:REGION_SURVEY_LAYER};regionSurvey=state;
+          regionSurveys.set('spherex',state);
           state.image=await applyLayer('spherex',previous.properties,comparisonMap,REGION_SURVEY_LAYER);
           state.image.setOpacity(surveyOpacity('spherex'));
         }
@@ -622,9 +669,11 @@ async function checkForDataUpdates() {
   let verified=false;
   try{
     try{await refreshPublishedSurvey();verified=true;}
-    catch(error){dataFreshness.textContent='The map update check failed; the current map is retained.';
+    catch(error){
+      if(publishedSurveyCheck)publishedSurveyCheck={...publishedSurveyCheck,stale:true};
+      dataFreshness.textContent='The map update check failed; the current map is retained.';
       observationLog('SPHEREx release check','unavailable',{message:error.message});}
-    if(pairState?.ready){
+    if(pairState?.ready && !isAlternativeSurvey(currentMission)){
       // Re-enable older-date discovery too: a new release can backfill data
       // that were not searchable when a previous history check was exhausted.
       pairState.historyExhausted=false;
@@ -636,6 +685,18 @@ async function checkForDataUpdates() {
 }
 
 function applyLayer(id, properties, viewer = skyMap, layer = null) {
+  if(id==='gaia'){
+    // Original Gaia path from the supplied working version: let Aladin load
+    // its own survey metadata and replace the shared viewer's base layer.
+    return new Promise((resolve,reject)=>{
+      const options={
+        name:MISSIONS[id].name,
+        errorCallback:reject,
+        successCallback:()=>resolve()
+      };
+      skyMap.setBaseImageLayer(A.HiPS(MISSIONS[id].url,options));
+    });
+  }
   return new Promise((resolve, reject) => {
     const options = {
       name: MISSIONS[id].name,
@@ -649,27 +710,62 @@ function applyLayer(id, properties, viewer = skyMap, layer = null) {
           if (layer) hips.setOpacity(0);
           if (id === 'spherex') setSurveyChannel(hips,properties,
             viewer===comparisonMap && spectrumState?.preparing && regionMode==='infrared'?spectrumState.channels[0]:CHANNEL_INDEX);
-          if(viewer===skyMap && !layer)baseSurveyImage=hips;
+          if(id==='spherex' && viewer===skyMap && !layer)baseSurveyImage=hips;
           resolve(hips);
         } catch (error) { reject(error); }
       }
     };
-    // Replaces the base layer in the SAME viewer. Aladin reads each survey's
-    // coordinate frame (SPHEREx equatorial, Gaia galactic) from its metadata.
-    // No goto/zoom calls: the current ICRS position, FoV and perspective stay put.
     const hips = A.HiPS(MISSIONS[id].url, options);
     if (layer) viewer.setOverlayImageLayer(hips, layer);
     else viewer.setBaseImageLayer(hips);
   });
 }
 
+function discardRegionSurveys() {
+  regionSurveys.forEach(state=>comparisonMap.removeImageLayer(state.layer));
+  regionSurveys.clear();regionSurvey=null;
+}
+
 function isObservation(id) { return /^observation-\d+$/.test(id || ''); }
+function isAlternativeSurvey(id) { return id==='gaia' || id==='dss2' || id==='wise'; }
 const observationIndex = id => Number(id.slice('observation-'.length));
 
-function observationTimeline() {
+function observationTimeline({includeHidden=false}={}) {
   return (selectedPair?.observations || []).map((exposure,index)=>({exposure,id:`observation-${index}`}))
-    .filter(entry=>pairState?.frames.has(entry.id))
+    .filter(entry=>pairState?.frames.has(entry.id) && (includeHidden || !pairState.hiddenObservations?.has(entry.id)))
     .sort((a,b)=>Date.parse(a.exposure.observedStart)-Date.parse(b.exposure.observedStart));
+}
+
+async function hideObservation(id) {
+  const state=pairState;
+  if(regionMode!=='time' || !comparisonActive || !state?.ready || switching || !state.frames.has(id) || state.hiddenObservations.has(id))return false;
+  stopPlayback();
+  const before=observationTimeline(),index=before.findIndex(entry=>entry.id===id);
+  state.hiddenObservations.add(id);
+  if(currentMission===id){
+    const remaining=observationTimeline(),replacement=remaining[Math.min(index,remaining.length-1)];
+    if(replacement)await switchMission(replacement.id);
+    else{
+      state.frames.forEach(frame=>frame.image.setOpacity(0));
+      currentMission='spherex';scrubbedObservationId=null;
+      updateSourceDescription();
+    }
+  }
+  if(pairState===state)updateMissionControls();
+  return true;
+}
+
+async function restoreObservation(id=null) {
+  const state=pairState;
+  if(regionMode!=='time' || !comparisonActive || !state?.ready || switching)return false;
+  if(id!==null && !state.hiddenObservations.has(id))return false;
+  stopPlayback();
+  const empty=observationTimeline().length===0;
+  if(id===null)state.hiddenObservations.clear();else state.hiddenObservations.delete(id);
+  const first=observationTimeline()[0];
+  if(empty && first)await switchMission(first.id);
+  if(pairState===state)updateMissionControls();
+  return true;
 }
 
 function updatePlaybackControls() {
@@ -720,8 +816,8 @@ function togglePlayback() {
 }
 
 function updateFilmstrip() {
-  const entries=observationTimeline();
-  const visible=regionMode==='time' && comparisonActive && !!pairState?.ready && entries.length>0;
+  const entries=observationTimeline(),allEntries=observationTimeline({includeHidden:true});
+  const visible=regionMode==='time' && !isAlternativeSurvey(currentMission) && comparisonActive && !!pairState?.ready && allEntries.length>0;
   if(playback && (!visible || switching || playback.ids.join(',')!==entries.map(entry=>entry.id).join(',')))stopPlayback();
   updatePlaybackControls();
   filmstrip.hidden=!visible;
@@ -732,6 +828,22 @@ function updateFilmstrip() {
     filmstripDrag=null;filmstripWindow.classList.remove('dragging');
     filmstripTrack.replaceChildren();filmstripTiles=[];filmstripSignature='';return;
   }
+  const excluded=allEntries.filter(entry=>pairState.hiddenObservations.has(entry.id));
+  hiddenObservations.hidden=!excluded.length;
+  hiddenObservationCount.textContent=`${excluded.length} hidden date${excluded.length===1?'':'s'}`;
+  restoreObservations.disabled=switching || !excluded.length;
+  const hiddenSignature=`${pairState.sequence}:${excluded.map(entry=>entry.id).join(',')}`;
+  if(hiddenSignature!==hiddenFilmstripSignature){
+    hiddenFilmstripSignature=hiddenSignature;
+    hiddenObservationList.replaceChildren();hiddenObservationButtons=[];
+    for(const {exposure,id} of excluded){
+      const button=document.createElement('button');button.type='button';
+      button.textContent=`Restore ${exposure.observedStart.slice(0,10)}`;
+      button.addEventListener('click',()=>{void restoreObservation(id).catch(showError);});
+      hiddenObservationList.append(button);hiddenObservationButtons.push(button);
+    }
+  }
+  hiddenObservationButtons.forEach(button=>{button.disabled=switching;});
   const signature=`${pairState.sequence}:${entries.map(entry=>entry.id).join(',')}`;
   if(signature!==filmstripSignature){
     filmstripTrack.replaceChildren();filmstripTiles=[];
@@ -740,9 +852,21 @@ function updateFilmstrip() {
       const preview=pairState.frames.get(id).thumbnail;
       if(preview){const image=document.createElement('img');image.src=preview;image.alt='';tile.append(image);}
       const caption=document.createElement('span');caption.textContent=exposure.observedStart.slice(0,10);
-      tile.append(caption);filmstripTrack.append(tile);filmstripTiles.push(tile);
+      const hide=document.createElement('button');hide.type='button';hide.classList.add('filmstrip-hide');
+      hide.textContent='×';hide.title='Hide this date from the timeline and playback';
+      hide.setAttribute('aria-label',`Hide ${exposure.observedStart.slice(0,10)} from the timeline and playback`);
+      hide.addEventListener('click',event=>{event.stopPropagation();void hideObservation(id).catch(showError);});
+      tile.hideButton=hide;
+      tile.append(caption);tile.append(hide);filmstripTrack.append(tile);filmstripTiles.push(tile);
     }
     filmstripSignature=signature;
+  }
+  filmstripTiles.forEach(tile=>{tile.hideButton.disabled=switching;});
+  if(!entries.length){
+    observationScrubber.max='0';observationScrubber.value='0';observationScrubber.disabled=true;
+    observationScrubber.setAttribute('aria-valuetext','All observation dates are hidden');
+    filmstripDate.textContent='All dates hidden';filmstripHelp.textContent='Restore a hidden date below to show observations again.';
+    filmstripTrack.style.transform='translateX(0)';return;
   }
   const selected=isObservation(currentMission)?currentMission:scrubbedObservationId;
   let index=entries.findIndex(entry=>entry.id===selected);
@@ -753,7 +877,8 @@ function updateFilmstrip() {
   const date=entries[index].exposure.observedStart.replace('T',' ').replace('Z',' UTC');
   observationScrubber.setAttribute('aria-valuetext',`${date}, image ${index+1} of ${entries.length}`);
   filmstripDate.textContent=isObservation(currentMission)?`${date} · ${index+1}/${entries.length}`:'Drag below to view dated observations';
-  filmstripHelp.textContent=entries.length<2?'Load earlier dates to scrub through observations.':'Drag the strip or slider · oldest → newest · UTC dates';
+  filmstripHelp.textContent=(entries.length<2?'Load or restore another date to play.':'Drag the strip or slider · oldest → newest · UTC dates')+
+    ' · × hides a date from playback'+(excluded.length?` · ${excluded.length} hidden`:'');
   filmstripTrack.style.transform=`translateX(-${index*68+32}px)`;
   filmstripTiles.forEach((tile,i)=>tile.classList.toggle('selected',i===index && isObservation(currentMission)));
 }
@@ -768,7 +893,7 @@ function scrubObservation() {
 }
 
 filmstripWindow.addEventListener('pointerdown',event=>{
-  if(observationScrubber.disabled || event.button!==0)return;
+  if(event.target?.closest?.('button') || observationScrubber.disabled || event.button!==0)return;
   stopPlayback();
   event.preventDefault();
   filmstripDrag={pointer:event.pointerId,x:event.clientX,index:Number(observationScrubber.value)};
@@ -828,12 +953,16 @@ function syncObservationButtons() {
 }
 
 function updateMissionControls() {
+  document.body.classList.toggle('gaia-view',currentMission==='gaia');
+  document.body.classList.toggle('dss2-view',currentMission==='dss2');
+  document.body.classList.toggle('wise-view',currentMission==='wise');
   syncObservationButtons();
   missionButtons.forEach(button => {
     const id = button.dataset.mission;
     const dated = isObservation(id);
     const index = dated ? observationIndex(id) : -1;
     button.disabled = switching || currentMission === null || (dated && (!pairState?.ready || !pairState.frames.has(id)));
+    button.hidden=dated && !!pairState?.hiddenObservations.has(id);
     button.setAttribute('aria-pressed', String(id === currentMission));
     if (dated) {
       const exposure = selectedPair?.observations[index];
@@ -841,7 +970,7 @@ function updateMissionControls() {
       button.title = exposure ? `Observed ${exposure.observedStart}; coverage: ${exposure.coverage || 'not measured'}` : 'Draw a rectangle to load one available observation.';
     }
   });
-  historyButton.hidden = regionMode!=='time' || !pairState?.ready;
+  historyButton.hidden = isAlternativeSurvey(currentMission) || regionMode!=='time' || !pairState?.ready;
   historyButton.disabled = switching || !!pairState?.pending || !!pairState?.historyPending || !!pairState?.historyExhausted;
   historyButton.textContent = pairState?.historyPending ? 'Loading earlier dates…' : pairState?.historyExhausted ? 'No earlier same-band dates' :
     pairState?.historyRetry ? 'Retry earlier dates' : (selectedPair?.observations.length || 0)>1 ? 'Load 10 more dates' : 'Load 10 earlier dates';
@@ -849,6 +978,41 @@ function updateMissionControls() {
   updateRegionControls();
   updateWavelengthControls();
   updateSpectrumControls();
+  updateSurveyDates();
+}
+
+function updateSurveyDates() {
+  const panel=document.getElementById('survey-dates');
+  panel.hidden=!currentMission;
+  if(!currentMission)return;
+  const dated=isObservation(currentMission),id=dated?'spherex':currentMission;
+  const properties=metadata.get(id) || {};
+  const exposure=dated?selectedPair?.observations[observationIndex(currentMission)]:null;
+  const dates=surveyDates(id,properties,exposure);
+  const reference=surveyDates('spherex',metadata.get('spherex'));
+  document.getElementById('survey-date-current').textContent=`${dated?'SPHEREx exposure':MISSIONS[id]?.name || id} · ${dates.label}`;
+  if(comparisonActive && regionMode==='time' && pairState?.ready && !observationTimeline().length && !isAlternativeSurvey(currentMission)){
+    document.getElementById('survey-date-current').textContent='SPHEREx · All observation dates are hidden';
+  }
+  const publication=properties.hips_release_date;
+  document.getElementById('survey-date-publication').textContent=publication?`Map published ${publication} · publication date, not observation date.`:'';
+  const latest=publishedSurveyCheck?.stale?'Latest SPHEREx check unavailable; last verified map retained.':
+    publishedSurveyCheck?.newerAdvertised?'A newer SPHEREx map needs a viewer compatibility update.':
+    publishedSurveyCheck?.warnings?.length?'SPHEREx release discovery is incomplete.':
+    publishedSurveyCheck?'Latest compatible published SPHEREx map · checked '+new Date(publishedSurveyCheck.checkedAt).toISOString().slice(0,10)+' UTC.':
+    'Latest SPHEREx release has not been verified.';
+  document.getElementById('survey-date-reference').textContent=`SPHEREx reference · ${reference.label}. ${latest}`;
+  document.getElementById('survey-date-match').textContent=id==='spherex'?
+    (dated?'Showing your selected dated exposure; the reference above remains the latest published sky map.':
+      latest):
+    compareSurveyDates(reference,dates);
+  for(const key of ['spherex','gaia','dss2','wise']){
+    const available=metadata.get(key);
+    document.getElementById(`survey-date-${key}`).textContent=available?surveyDates(key,available).label:'Not loaded yet';
+  }
+  const source=document.getElementById('survey-date-source');
+  source.hidden=!dates.source;
+  if(dates.source)source.href=dates.source;
 }
 
 function updateSourceDescription() {
@@ -867,6 +1031,9 @@ function updateSourceDescription() {
     surveyCredit.textContent = source.credit;
     surveyCredit.href = source.link;
     surveyCredit.title = source.description;
+    if(['dss2','wise'].includes(currentMission) && metadata.get(currentMission)?.hips_release_date){
+      surveyCredit.title+=` Published map: ${metadata.get(currentMission).hips_release_date}.`;
+    }
   }
 }
 
@@ -875,14 +1042,14 @@ async function switchMission(id, {fromPlayback=false}={}) {
   if(!fromPlayback)stopPlayback();
   if (switching || !skyMap) return false;
   if (isObservation(id)) {
-    if (!pairState?.ready || !pairState.frames.has(id)) return false;
+    if (!pairState?.ready || !pairState.frames.has(id) || pairState.hiddenObservations.has(id)) return false;
     const state=pairState,region=selectedRegion;
     // Resident frames already share the locked camera/crop. Scrubbing changes
     // visibility synchronously; only re-entering the region needs a fresh fit.
     if(!comparisonActive)await enterComparison();
     else if(!regionMapElement.style.getPropertyValue('--region-clip'))await fitComparisonRegion();
     if (pairState!==state || selectedRegion!==region || !state.ready || !comparisonActive) return false;
-    regionSurvey?.image?.setOpacity(0);
+    regionSurveys.forEach(state=>state.image?.setOpacity(0));
     pairState.frames.forEach((frame, key) => frame.image.setOpacity(key === id ? 1 : 0));
     currentMission = id;
     scrubbedObservationId = id;
@@ -892,7 +1059,8 @@ async function switchMission(id, {fromPlayback=false}={}) {
     return true;
   }
   if (!MISSIONS[id]) return false;
-  if (selectedRegion) return switchRegionSurvey(id);
+  if (selectedRegion && id!=='gaia' && currentMission!=='gaia' &&
+    (comparisonActive || (!isAlternativeSurvey(id) && !isAlternativeSurvey(currentMission)))) return switchRegionSurvey(id);
   leaveComparison();
   if (baseMission === id) {
     currentMission = id;
@@ -914,7 +1082,7 @@ async function switchMission(id, {fromPlayback=false}={}) {
     return true;
   } catch (error) {
     if (previousBase) {
-      try { await applyLayer(previousBase, metadata.get(previousBase)); }
+      try { await applyLayer(previousBase, await getProperties(previousBase)); }
       catch (restoreError) { console.error('Could not restore previous survey:', restoreError); }
       currentMission = baseMission = previousBase;
     }
@@ -928,34 +1096,47 @@ async function switchMission(id, {fromPlayback=false}={}) {
 
 async function switchRegionSurvey(id) {
   const region = selectedRegion;
+  let state;
+  const previous=regionSurvey;
   switching = true;
   updateMissionControls();
   try {
-    await enterComparison();
-    if (selectedRegion !== region || !comparisonActive) return false;
     status.hidden = false;
     status.textContent = `Loading ${MISSIONS[id].name} in the selected region…`;
-    if (regionSurvey?.region !== region || regionSurvey.id !== id || !regionSurvey.image) {
-      const properties = await getProperties(id);
+    const properties = await getProperties(id);
+    await enterComparison();
+    if (selectedRegion !== region || !comparisonActive) return false;
+    state=regionSurveys.get(id);
+    if (state?.region !== region || state.properties!==properties || state.url!==MISSIONS[id].url || !state.image) {
       if (selectedRegion !== region || !comparisonActive) return false;
-      const state = { region, id, image: null };
-      regionSurvey = state;
-      const image = await applyLayer(id, properties, comparisonMap, REGION_SURVEY_LAYER);
+      state = { region, id, image: null,properties,url:MISSIONS[id].url,
+        layer:id==='spherex'?REGION_SURVEY_LAYER:`${REGION_SURVEY_LAYER}-${id}` };
+      regionSurveys.set(id,state);
+      const image = await applyLayer(id, properties, comparisonMap, state.layer);
       state.image = image;
-      if (regionSurvey !== state || selectedRegion !== region || !comparisonActive) return false;
+      if (regionSurveys.get(id)!==state || selectedRegion !== region || !comparisonActive) return false;
     }
-    await fitComparisonRegion();
+    if(!regionMapElement.style.getPropertyValue('--region-clip'))await fitComparisonRegion();
     if (selectedRegion !== region || !comparisonActive) return false;
     pairState?.frames.forEach(frame => frame.image.setOpacity(0));
+    regionSurveys.forEach(survey=>survey.image?.setOpacity(0));
+    regionSurvey=state;
     regionSurvey.image.setOpacity(surveyOpacity(id));
     currentMission = id;
+    if(regionMode==='infrared' && spectrumState?.ready && spectrumState.region===region){
+      regionSurvey.image.setOpacity(0);
+      drawSpectrumFrame(spectrumState.frames[spectrumState.channel]);
+    }
     updateSourceDescription();
     status.hidden = true;
     return true;
   } catch (error) {
-    if (regionSurvey?.region === region && regionSurvey.id === id) {
-      comparisonMap.removeImageLayer(REGION_SURVEY_LAYER);
-      regionSurvey = null;
+    if (state && regionSurveys.get(id)===state) {
+      comparisonMap.removeImageLayer(state.layer);regionSurveys.delete(id);
+      if(regionSurvey===state)regionSurvey=null;
+    }
+    if(previous?.image && regionSurveys.get(previous.id)===previous){
+      regionSurvey=previous;previous.image.setOpacity(surveyOpacity(previous.id));
     }
     showError(error);
     return false;
@@ -1040,7 +1221,7 @@ function enforceRegionLayers() {
   // Aladin may restore a default background after a failed first FITS load.
   // Keep only the selected region's observation and explicitly chosen survey.
   const allowed = new Set([...(pairState?.frames.values() || [])].map(frame => frame.layer));
-  if (regionSurvey) allowed.add(REGION_SURVEY_LAYER);
+  regionSurveys.forEach(state=>allowed.add(state.layer));
   for (const layer of [...comparisonMap.getStackLayers()]) {
     if (!allowed.has(layer)) comparisonMap.removeImageLayer(layer);
   }
@@ -1204,8 +1385,7 @@ function clearSelectedRegion() {
   drawingRegion = false;
   leaveComparison();
   discardPreparedObservations();
-  if (regionSurvey) comparisonMap.removeImageLayer(REGION_SURVEY_LAYER);
-  regionSurvey = null;
+  discardRegionSurveys();
   selectedRegion = null;
   regionOverlay?.removeAll();
   regionOverlay?.hide();
@@ -1215,7 +1395,7 @@ function clearSelectedRegion() {
 }
 
 async function startRegionSelection() {
-  if (!skyMap || switching) return;
+  if (!skyMap || switching || isAlternativeSurvey(currentMission)) return;
   if (drawingRegion) { clearSelectedRegion(); return; }
   clearSelectedRegion();
   const sequence = ++selectionSequence;
@@ -1259,12 +1439,12 @@ async function startRegionSelection() {
 }
 
 async function loadSelectedObservations() {
-  if (regionMode!=='time' || !selectedRegion || selectedRegion.sizeDegrees>1 || drawingRegion || switching || pairState?.pending) return false;
+  if (isAlternativeSurvey(currentMission) || regionMode!=='time' || !selectedRegion || selectedRegion.sizeDegrees>1 || drawingRegion || switching || pairState?.pending) return false;
   const region = selectedRegion;
   await enterComparison();
   if (selectedRegion !== region || !comparisonActive) return false;
   discardPreparedObservations();
-  const state = { sequence: ++preloadSequence, region, controller: new AbortController(), frames: new Map(), blobUrls: [], pending:true, ready:false };
+  const state = { sequence: ++preloadSequence, region, controller: new AbortController(), frames: new Map(), blobUrls: [], hiddenObservations:new Set(), pending:true, ready:false };
   pairState = state;
   preloadProgress.hidden = false;
   preloadProgress.textContent = 'Finding the newest usable SPHEREx image returned for this region…';
@@ -1309,7 +1489,7 @@ async function loadSelectedObservations() {
     enforceRegionLayers();
     // Do not reopen a comparison the user left while the files were loading.
     step = 'Aladin image display';
-    if (comparisonActive) await switchMission('observation-0');
+    if (comparisonActive && !isAlternativeSurvey(currentMission)) await switchMission('observation-0');
     if (pairState !== state || state.controller.signal.aborted) return false;
     preloadProgress.textContent = `Observation ready · ${result.observations[0].observedStart.slice(0,10)} UTC · ${result.observations[0].band} · ${result.observations[0].coverage==='full'?'full footprint coverage':'partial coverage possible'}`+
       (result.searchLimited?' · Search capped; newer images may exist.':'');
@@ -1346,7 +1526,7 @@ async function readArchiveResponse(response, step) {
 
 async function loadEarlierObservations({newer=false}={}) {
   const state=pairState, selection=selectedPair;
-  if (regionMode!=='time' || !selectedRegion || !state?.ready || state.pending || state.historyPending || (!newer && state.historyExhausted) || switching) return false;
+  if (isAlternativeSurvey(currentMission) || regionMode!=='time' || !selectedRegion || !state?.ready || state.pending || state.historyPending || (!newer && state.historyExhausted) || switching) return false;
   const anchor=newer?(state.newerAnchor || selection.observations.reduce((latest,exposure)=>
     Date.parse(exposure.observedStart)>Date.parse(latest.observedStart)?exposure:latest)):
     (state.historyAnchor || selection.observations[isObservation(currentMission)?observationIndex(currentMission):0]);
@@ -1440,6 +1620,13 @@ async function loadEarlierObservations({newer=false}={}) {
 drawRegionButton.addEventListener('click', startRegionSelection);
 historyButton.addEventListener('click', loadEarlierObservations);
 filmstripPlay.addEventListener('click',togglePlayback);
+restoreObservations.addEventListener('click',()=>{void restoreObservation().catch(showError);});
+if(typeof ResizeObserver!=='undefined'){
+  const observer=new ResizeObserver(()=>{
+    document.documentElement.style.setProperty('--observation-player-height',`${Math.ceil(filmstrip.getBoundingClientRect().height)}px`);
+  });
+  observer.observe(filmstrip);
+}
 observationScrubber.addEventListener('input',scrubObservation);
 observationScrubber.addEventListener('pointerdown',stopPlayback);
 document.addEventListener('visibilitychange',()=>{

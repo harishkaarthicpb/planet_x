@@ -14,7 +14,8 @@ const routes = {
   '/sky-region.mjs': ['sky-region.mjs', 'text/javascript; charset=utf-8'],
   '/fits-preview.mjs': ['fits-preview.mjs', 'text/javascript; charset=utf-8'],
   '/spectrum-buffer.mjs': ['spectrum-buffer.mjs', 'text/javascript; charset=utf-8'],
-  '/hips-cube-tiles.mjs': ['hips-cube-tiles.mjs', 'text/javascript; charset=utf-8']
+  '/hips-cube-tiles.mjs': ['hips-cube-tiles.mjs', 'text/javascript; charset=utf-8'],
+  '/survey-dates.mjs': ['survey-dates.mjs', 'text/javascript; charset=utf-8'],
 };
 
 const server = http.createServer(async (request, response) => {

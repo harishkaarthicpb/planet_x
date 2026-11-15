@@ -6,14 +6,25 @@ const { angularSeparationDegrees,regionFromRectangle } = require('../sky-region.
 const { sampleFitsPreview } = require('../fits-preview.mjs');
 const {spectrumFrameSize,bufferSpectrumFrames,disposeSpectrumFrames,paintSpectrumFrame}=require('../spectrum-buffer.mjs');
 const {blankCubeChannels}=require('../hips-cube-tiles.mjs');
+const {surveyDates,compareSurveyDates}=require('../survey-dates.mjs');
+const DSS2_URL='https://stpubdata.s3.us-east-1.amazonaws.com/mast/skybackgrounds/DSSColor';
+const DSS2_PROPERTIES={creator_did:'ivo://CDS/P/DSS2/color',hips_tile_format:'jpeg',
+  hips_frame:'equatorial',hips_order:'9',hips_tile_width:'512',dataproduct_type:'image',
+  dataproduct_subtype:'color',hips_release_date:'2019-05-07T10:55Z',t_min:'42413',t_max:'51179'};
+const WISE_URL='https://irsa.ipac.caltech.edu/data/hips/CDS/AllWISE/RGB-W4-W2-W1';
+const WISE_PROPERTIES={creator_did:'ivo://CDS/P/allWISE/color',hips_tile_format:'jpeg',
+  hips_frame:'equatorial',hips_order:'8',hips_tile_width:'512',dataproduct_type:'image',
+  dataproduct_subtype:'color',hips_release_date:'2019-05-20T08:30Z',t_min:'55378',t_max:'55414'};
 
 // Exercise the browser controller without a live archive or WebGL context.
 function browserController({ invalidProjection = false, displayFails = false, imageCenter = [60,50], history=[], failHistoryDate=null, historyGate=null, historySearchFails=false,clock=performance,
-  newerHistory=[],releaseData=null,releaseFails=false,failSurveyUrl=null,largeRectangle=false,spectrumGate=null,spectrumCaptureFailure=null } = {}) {
+  newerHistory=[],releaseData=null,releaseFails=false,failSurveyUrl=null,gaiaMetadataFailure=null,
+  dss2Metadata=DSS2_PROPERTIES,dss2MetadataFailure=null,wiseMetadata=WISE_PROPERTIES,wiseMetadataFailure=null,
+  largeRectangle=false,spectrumGate=null,spectrumCaptureFailure=null } = {}) {
   const elements = new Map();
-  const requests=[];
+  const requests=[],requestOptions=[];
   const documentEvents={};
-  const intervals=[],baseLayers=[];
+  const intervals=[],baseLayers=[],surveyImages=[];
   const captures=[],canvasDraws=[];
   const classes=()=>{const set=new Set();return {add:value=>set.add(value),remove:value=>set.delete(value),contains:value=>set.has(value),toggle(value,on){if(on)set.add(value);else set.delete(value);}};};
   let elementSequence=0;
@@ -34,7 +45,7 @@ function browserController({ invalidProjection = false, displayFails = false, im
     }
     return elements.get(id);
   };
-  let fov = 1, pendingFov = null, options, fits=0;
+  let fov = 1, pendingFov = null, options, fits=0, center=[60,50], rotation=0;
   const layers = new Map();
   const map = {
     view:{wasm:{isRendering:()=>false}},
@@ -42,8 +53,8 @@ function browserController({ invalidProjection = false, displayFails = false, im
     pix2world:(x,y)=>[60+(x-200)*(largeRectangle ? .2 : .001),50+(y-200)*(largeRectangle ? .2 : .001)],
     getRotation:()=>0,addOverlay(){},showReticle(){},fire(){},
     setBaseImageLayer(image){baseLayers.push(image);setImmediate(()=>image.load());},
-    gotoRaDec() {}, setRotation() {}, setFoV(value) { pendingFov = value;fits++; },
-    getSize: () => [400,400], getRaDec: () => [60,50], getFov: () => [fov,fov],
+    gotoRaDec(ra,dec) { center=[ra,dec]; }, setRotation(value) { rotation=value; }, setFoV(value) { pendingFov = value;fits++; },
+    getSize: () => [400,400], getRaDec: () => center, getFov: () => [fov,fov],
     world2pix: (ra,dec) => invalidProjection ? null : [200+(ra-60)*400/fov, 200+(dec-50)*400/fov],
     getOverlayImageLayer: id => displayFails && context.controller.state()?.ready ? undefined : layers.get(id),
     setOverlayImageLayer(image,id) {
@@ -55,7 +66,7 @@ function browserController({ invalidProjection = false, displayFails = false, im
   const context = vm.createContext({
     console: { info() {}, error() {} }, performance:clock, setTimeout, clearTimeout, angularSeparationDegrees,regionFromRectangle,sampleFitsPreview,
     spectrumFrameSize,bufferSpectrumFrames,disposeSpectrumFrames,paintSpectrumFrame,
-    registerCubeTileRoot(){},blankCubeChannels,
+    registerCubeTileRoot(){},blankCubeChannels,surveyDates,compareSurveyDates,
     observeSurveyTiles:()=>({pending:0,activity:0,failures:[],dispose(){}}),
     waitForSurveyTiles:async(tracker,{signal})=>{
       if(spectrumGate){spectrumGate.started=true;await spectrumGate.promise;}
@@ -76,8 +87,23 @@ function browserController({ invalidProjection = false, displayFails = false, im
     document: { getElementById: element,createElement:()=>element(`generated-${++elementSequence}`), querySelectorAll: () => [], addEventListener(name,callback){documentEvents[name]=callback;},
       body: { classList:classes() } },
     window: { addEventListener() {},setInterval(callback,milliseconds){intervals.push({callback,milliseconds});}, innerWidth:400,innerHeight:400,location: { href: 'http://localhost/' } },
-    fetch: async url => {
+    fetch: async (url,options) => {
       requests.push(String(url));
+      requestOptions.push(options);
+      if(String(url)==='https://skies.esac.esa.int/Gaia/dr3/RGB/properties'){
+        if(gaiaMetadataFailure)throw gaiaMetadataFailure;
+        return {ok:true,status:200,text:async()=> 'creator_did=ivo://ESAVO/P/GAIA/DR3-RGB\nhips_tile_format=png\nhips_frame=galactic\nhips_order=7\nhips_tile_width=512\ndataproduct_type=image'};
+      }
+      if(String(url)===`${DSS2_URL}/properties`){
+        if(dss2MetadataFailure)throw dss2MetadataFailure;
+        const properties=typeof dss2Metadata==='function'?dss2Metadata():dss2Metadata;
+        return {ok:true,status:200,text:async()=>Object.entries(properties).map(([key,value])=>`${key}=${value}`).join('\n')};
+      }
+      if(String(url)===`${WISE_URL}/properties`){
+        if(wiseMetadataFailure)throw wiseMetadataFailure;
+        const properties=typeof wiseMetadata==='function'?wiseMetadata():wiseMetadata;
+        return {ok:true,status:200,text:async()=>Object.entries(properties).map(([key,value])=>`${key}=${value}`).join('\n')};
+      }
       if(String(url).includes('/api/spherex/release'))return releaseFails?
         {ok:false,status:503,json:async()=>({error:'Release check unavailable'})}:
         {ok:true,status:200,json:async()=>releaseData || publishedRelease()};
@@ -97,8 +123,9 @@ function browserController({ invalidProjection = false, displayFails = false, im
     testA: { graphicOverlay:()=>({removeAll(){},addFootprints(){},show(){},hide(){}}),polygon:corners=>corners,
       HiPS(url,configuration) {
       let opacity=1;
-      const hips={url,configuration,frequencies:[],setOpacity(value){opacity=value;},getOpacity:()=>opacity,setFrequency(value){this.frequencies.push(value);},
+      const hips={url,configuration,_parseProperties(properties){this.parsedProperties=properties;},frequencies:[],setOpacity(value){opacity=value;},getOpacity:()=>opacity,setFrequency(value){this.frequencies.push(value);},
         load:()=>failSurveyUrl && url.includes(failSurveyUrl)?configuration.errorCallback(new Error('Map load failed')):configuration.successCallback(hips)};
+      surveyImages.push(hips);
       return hips;
     }, image(url,configuration) {
       options = configuration;
@@ -114,20 +141,24 @@ function browserController({ invalidProjection = false, displayFails = false, im
     currentMission = baseMission = 'spherex';
     selectedRegion = {position:{ra:60,dec:50},corners:[[59.9,49.9],[60.1,49.9],[60.1,50.1],[59.9,50.1]],sizeDegrees:.3,rotation:0,aspect:1};
     metadata.set('spherex',{hips_cube_depth:'100',em_min:'1e-6',em_max:'5e-6'});
-    metadata.set('gaia',{});
     globalThis.controller = { fitComparisonRegion, loadSelectedObservations,loadEarlierObservations, switchMission, clearSelectedRegion,observationTimeline,scrubObservation,togglePlayback,stopPlayback,
+      hideObservation,restoreObservation,
       checkForDataUpdates,updating:()=>checkingUpdates,survey:()=>({...MISSIONS.spherex,channelIndex:CHANNEL_INDEX}),
       initializeSurvey:async survey=>{configureSpherexSurvey(survey);await applyLayer('spherex',survey.properties);currentMission=baseMission='spherex';leaveComparison();updateMissionControls();},
       chooseRegionMode,startRegionSelection,loadSelectedSpectrum,selectSpectrumChannel,toggleSpectrum,stopSpectrum,spectrum:()=>spectrumState,regionMode:()=>regionMode,
+      regionSurvey:()=>regionSurvey,
       playing:()=>!!playback,
       buttons:()=>missionButtons,
       active: () => comparisonActive, mission: () => currentMission,
       cancel: () => { comparisonActive=false; selectedRegion=null; },
       state: () => pairState };
   `,context);
-  return { controller:context.controller, element, options:() => options, layers,requests,fits:()=>fits,document:context.document,documentEvents,intervals,baseLayers,
-    captures,canvasDraws,setRendering:value=>{map.view.wasm.isRendering=()=>value;} };
+  return { controller:context.controller, element, options:() => options, layers,requests,requestOptions,fits:()=>fits,document:context.document,documentEvents,intervals,baseLayers,
+    captures,canvasDraws,surveyImages,setRendering:value=>{map.view.wasm.isRendering=()=>value;},
+    setView:(ra,dec,zoom,angle)=>{center=[ra,dec];fov=zoom;pendingFov=null;rotation=angle;},
+    camera:()=>({center:[...center],fov,rotation}) };
 }
+
 
 function wavelengthSurvey(release=1){
   const survey=publishedRelease(release).survey;
@@ -172,10 +203,248 @@ test('rapid wavelength input commits only the latest band and ignores invalid in
   assert.equal(image.frequencies.length,count+1);
 });
 
-test('wavelength selection survives Gaia and stays independent of dated observations',async()=>{
+test('WISE color uses the official IRSA service and preserves the shared whole-sky camera',async()=>{
+  const browser=browserController();await browser.controller.initializeSurvey(wavelengthSurvey());
+  browser.controller.cancel();
+  for(const [ra,dec] of [[123,56],[359.99,-20],[.01,89.9]]){
+    browser.setView(ra,dec,3,27);const before=browser.camera();
+    for(const mission of ['wise','dss2','spherex']){
+      assert.equal(await browser.controller.switchMission(mission),true);
+      assert.deepEqual(browser.camera(),before);
+      assert.equal(browser.controller.active(),false);
+      assert.equal(browser.document.body.classList.contains('wise-view'),mission==='wise');
+      if(mission==='wise'){
+        const image=browser.baseLayers.at(-1);
+        assert.equal(image.url,WISE_URL);assert.equal(image.frequencies.length,0);
+        assert.equal(browser.element('wavelength-panel').hidden,true);
+        assert.match(browser.element('survey-date-current').textContent,/WISE Color.*2010-07-01 – 2010-08-06/);
+        assert.match(browser.element('survey-date-wise').textContent,/2010-07-01/);
+        assert.match(browser.element('survey-date-match').textContent,/Historical comparison/);
+      }
+    }
+  }
+  assert.equal(browser.requests.some(url=>/neowise/i.test(url)),false);
+});
+
+test('WISE retains the exact selected SPHEREx region and returns to resident dated observations',async()=>{
+  const browser=browserController();await browser.controller.loadSelectedObservations();
+  await browser.controller.switchMission('spherex');
+  const state=browser.controller.state(),frame=state.frames.get('observation-0');
+  const before=browser.camera(),fits=browser.fits(),crop=browser.element('region-map').style.getPropertyValue('--region-clip');
+  for(const mission of ['wise','dss2','spherex','wise']){
+    assert.equal(await browser.controller.switchMission(mission),true);
+    assert.equal(browser.controller.active(),true);
+    assert.deepEqual(browser.camera(),before);assert.equal(browser.fits(),fits);
+    assert.equal(browser.element('region-map').style.getPropertyValue('--region-clip'),crop);
+    assert.equal(browser.controller.regionSurvey().id,mission);
+    assert.equal(browser.controller.state(),state);
+    if(mission==='wise'){
+      assert.equal(browser.element('observation-filmstrip').hidden,true);
+      assert.equal(browser.element('load-history').hidden,true);
+      assert.equal(await browser.controller.loadSelectedObservations(),false);
+      assert.equal(await browser.controller.loadEarlierObservations(),false);
+    }
+  }
+  assert.equal(await browser.controller.switchMission('observation-0'),true);
+  assert.equal(frame.image.getOpacity(),1);
+  browser.controller.clearSelectedRegion();assert.equal(browser.layers.size,0);
+});
+
+test('WISE revalidates metadata on revisits and never loads unexpected or NEOWISE dataset identities',async()=>{
+  const browser=browserController();await browser.controller.initializeSurvey(wavelengthSurvey());browser.controller.cancel();
+  for(const mission of ['wise','spherex','wise'])await browser.controller.switchMission(mission);
+  const indices=browser.requests.flatMap((url,index)=>url===`${WISE_URL}/properties`?[index]:[]);
+  assert.equal(indices.length,2);
+  indices.forEach(index=>assert.equal(browser.requestOptions[index].cache,'no-cache'));
+  for(const settings of [{wiseMetadata:{...WISE_PROPERTIES,creator_did:'ivo://IPAC/NEOWISE/color'}},
+    {wiseMetadataFailure:new Error('WISE unavailable')},{failSurveyUrl:'AllWISE/RGB-W4-W2-W1'}]){
+    const failed=browserController(settings);await failed.controller.initializeSurvey(wavelengthSurvey());failed.controller.cancel();
+    failed.setView(123,56,3,27);const before=failed.camera();
+    assert.equal(await failed.controller.switchMission('wise'),false);
+    assert.equal(failed.controller.mission(),'spherex');assert.deepEqual(failed.camera(),before);
+    if(!settings.failSurveyUrl)assert.equal(failed.surveyImages.some(image=>image.url===WISE_URL),false);
+  }
+});
+
+test('switching to WISE after whole-sky navigation does not reopen an old selected crop',async()=>{
+  const browser=browserController();await browser.controller.initializeSurvey(wavelengthSurvey());
+  await browser.controller.loadSelectedObservations();browser.element('back-to-sky').listeners.click();
+  browser.setView(123,56,30,10);const before=browser.camera();
+  for(const mission of ['wise','spherex']){
+    assert.equal(await browser.controller.switchMission(mission),true);
+    assert.equal(browser.controller.active(),false);assert.deepEqual(browser.camera(),before);
+  }
+});
+
+test('DSS2 and SPHEREx share RA/Dec, zoom and rotation at ordinary, wraparound and polar positions',async()=>{
+  const browser=browserController();await browser.controller.initializeSurvey(wavelengthSurvey());
+  browser.controller.cancel();
+  for(const [ra,dec] of [[123,56],[359.99,-20],[.01,89.9]]){
+    browser.setView(ra,dec,3,27);const before=browser.camera();
+    for(const mission of ['dss2','spherex']){
+      assert.equal(await browser.controller.switchMission(mission),true);
+      assert.deepEqual(browser.camera(),before);
+      assert.equal(browser.controller.active(),false);
+      assert.equal(browser.document.body.classList.contains('dss2-view'),mission==='dss2');
+      assert.equal(browser.baseLayers.at(-1).url===DSS2_URL,mission==='dss2');
+      if(mission==='dss2'){
+        assert.equal(browser.baseLayers.at(-1).frequencies.length,0);
+        assert.equal(browser.element('wavelength-panel').hidden,true);
+      }
+    }
+  }
+});
+
+test('DSS2 revalidates current published metadata on each visit without pinning a release',async()=>{
+  let version=0;
+  const browser=browserController({dss2Metadata:()=>({...DSS2_PROPERTIES,hips_release_date:`2026-11-${14+version++}T10:55Z`})});
+  await browser.controller.initializeSurvey(wavelengthSurvey());browser.controller.cancel();
+  await browser.controller.switchMission('dss2');
+  assert.match(browser.element('survey-credit').title,/2026-11-14/);
+  await browser.controller.switchMission('spherex');
+  await browser.controller.switchMission('dss2');
+  assert.match(browser.element('survey-credit').title,/2026-11-15/);
+  const indices=browser.requests.flatMap((url,index)=>url===`${DSS2_URL}/properties`?[index]:[]);
+  assert.equal(indices.length,2);
+  indices.forEach(index=>assert.equal(browser.requestOptions[index].cache,'no-cache'));
+});
+
+test('visible dates distinguish historical alternative imagery from the latest SPHEREx reference',async()=>{
+  const browser=browserController({releaseData:publishedRelease(2)});
+  await browser.controller.initializeSurvey(wavelengthSurvey());browser.controller.cancel();
+  await browser.controller.switchMission('gaia');
+  assert.match(browser.element('survey-date-current').textContent,/2014-07-25 – 2017-05-28/);
+  assert.match(browser.element('survey-date-match').textContent,/Historical comparison/);
+  await browser.controller.switchMission('dss2');
+  assert.match(browser.element('survey-date-current').textContent,/1975-01-01 – 1999-01-01/);
+  assert.match(browser.element('survey-date-publication').textContent,/2019-05-07.*not observation date/);
+  assert.match(browser.element('survey-date-reference').textContent,/2026-05-14/);
+  const before=browser.camera();
+  await browser.controller.checkForDataUpdates();
+  assert.match(browser.element('survey-date-reference').textContent,/2026-07-13/);
+  assert.match(browser.element('survey-date-reference').textContent,/Latest compatible published/);
+  assert.match(browser.element('survey-date-current').textContent,/1975-01-01 – 1999-01-01/);
+  assert.match(browser.element('survey-date-match').textContent,/no matching SPHEREx epoch/);
+  assert.deepEqual(browser.camera(),before);
+});
+
+test('dated observations show the selected frame date and a stale SPHEREx check is labelled',async()=>{
+  const browser=browserController({releaseData:{...publishedRelease(),stale:true}});
+  await browser.controller.initializeSurvey(wavelengthSurvey());
+  await browser.controller.loadSelectedObservations();
+  assert.match(browser.element('survey-date-current').textContent,/2026-08-25 07:03:31 UTC/);
+  assert.match(browser.element('survey-date-match').textContent,/selected dated exposure/);
+  await browser.controller.checkForDataUpdates();
+  assert.match(browser.element('survey-date-reference').textContent,/Latest SPHEREx check unavailable/);
+});
+
+test('DSS2 uses exactly the selected SPHEREx crop and preserves resident observations when switching back',async()=>{
+  const browser=browserController();await browser.controller.loadSelectedObservations();
+  await browser.controller.switchMission('spherex');
+  const state=browser.controller.state(),frame=state.frames.get('observation-0');
+  const before=browser.camera(),fits=browser.fits(),crop=browser.element('region-map').style.getPropertyValue('--region-clip');
+  for(const mission of ['dss2','spherex','dss2']){
+    assert.equal(await browser.controller.switchMission(mission),true);
+    assert.equal(browser.controller.active(),true);
+    assert.deepEqual(browser.camera(),before);
+    assert.equal(browser.fits(),fits);
+    assert.equal(browser.element('region-map').style.getPropertyValue('--region-clip'),crop);
+    assert.equal(browser.controller.state(),state);
+    assert.equal(browser.controller.regionSurvey().image.getOpacity(),1);
+    assert.equal(browser.controller.regionSurvey().id,mission);
+    if(mission==='dss2'){
+      assert.equal(browser.element('observation-filmstrip').hidden,true);
+      assert.equal(browser.element('load-history').hidden,true);
+      assert.equal(await browser.controller.loadSelectedObservations(),false);
+      assert.equal(await browser.controller.loadEarlierObservations(),false);
+    }
+  }
+  assert.equal(await browser.controller.switchMission('observation-0'),true);
+  assert.equal(frame.image.getOpacity(),1);
+  browser.controller.clearSelectedRegion();
+  assert.equal(browser.layers.size,0);
+});
+
+test('DSS2 switching after leaving a region preserves the new whole-sky position instead of reopening the crop',async()=>{
+  const browser=browserController();await browser.controller.initializeSurvey(wavelengthSurvey());
+  await browser.controller.loadSelectedObservations();
+  browser.element('back-to-sky').listeners.click();
+  browser.setView(123,56,30,10);const before=browser.camera();
+  for(const mission of ['dss2','spherex']){
+    assert.equal(await browser.controller.switchMission(mission),true);
+    assert.equal(browser.controller.active(),false);
+    assert.deepEqual(browser.camera(),before);
+  }
+});
+
+test('failed DSS2 loading restores SPHEREx and an unexpected dataset is rejected before creating a layer',async()=>{
+  for(const settings of [{failSurveyUrl:'mast/skybackgrounds/DSSColor'},
+    {dss2Metadata:{...DSS2_PROPERTIES,creator_did:'ivo://unexpected/survey'}},
+    {dss2MetadataFailure:new Error('DSS2 service unavailable')}]){
+    const browser=browserController(settings);await browser.controller.initializeSurvey(wavelengthSurvey());
+    browser.controller.cancel();browser.setView(123,56,3,27);const before=browser.camera();
+    assert.equal(await browser.controller.switchMission('dss2'),false);
+    assert.equal(browser.controller.mission(),'spherex');
+    assert.deepEqual(browser.camera(),before);
+    assert.equal(browser.document.body.classList.contains('dss2-view'),false);
+    assert.equal(browser.baseLayers.at(-1).url.includes('spherex'),true);
+    if(!settings.failSurveyUrl)assert.equal(browser.surveyImages.some(image=>image.url===DSS2_URL),false);
+  }
+});
+
+test('Gaia switches the whole-sky layer at RA 123 Dec 56 without moving or zooming the camera',async()=>{
+  const browser=browserController();await browser.controller.initializeSurvey(wavelengthSurvey());
+  browser.controller.cancel();browser.setView(123,56,3,27);
+  const before=browser.camera();
+  for(const mission of ['gaia','spherex','gaia']){
+    assert.equal(await browser.controller.switchMission(mission),true);
+    assert.deepEqual(browser.camera(),before);
+    assert.equal(browser.controller.mission(),mission);
+    assert.equal(browser.document.body.classList.contains('gaia-view'),mission==='gaia');
+  }
+  const gaia=browser.baseLayers.at(-1);
+  assert.equal(gaia.url,'https://skies.esac.esa.int/Gaia/dr3/RGB');
+  assert.equal(browser.requests.filter(url=>url.includes('/Gaia/')).length,1);
+  const fetchOptions=browser.requestOptions[browser.requests.findIndex(url=>url.includes('/Gaia/'))];
+  assert.deepEqual(Object.keys(fetchOptions),['signal']);
+  assert.equal(fetchOptions.signal.aborted,false);
+  assert.equal(browser.baseLayers.length,4);
+  assert.deepEqual(Object.keys(gaia.configuration).sort(),['errorCallback','name','successCallback']);
+  assert.equal(gaia.parsedProperties,undefined);
+  assert.equal(browser.element('wavelength-panel').hidden,true);
+  const requests=browser.requests.length;
+  assert.equal(await browser.controller.loadSelectedObservations(),false);
+  assert.equal(await browser.controller.loadEarlierObservations(),false);
+  await browser.controller.startRegionSelection();
+  assert.equal(browser.requests.length,requests);
+});
+
+test('a failed Gaia layer restores SPHEREx without moving the camera',async()=>{
+  const browser=browserController({failSurveyUrl:'skies.esac.esa.int'});
+  await browser.controller.initializeSurvey(wavelengthSurvey());browser.controller.cancel();
+  browser.setView(123,56,.5,13);const before=browser.camera();
+  assert.equal(await browser.controller.switchMission('gaia'),false);
+  assert.equal(browser.controller.mission(),'spherex');
+  assert.deepEqual(browser.camera(),before);
+  assert.equal(browser.document.body.classList.contains('gaia-view'),false);
+});
+
+test('a Gaia metadata timeout preserves the prior view and a later click retries the original URL',async()=>{
+  const browser=browserController({gaiaMetadataFailure:new DOMException('The operation timed out','TimeoutError')});
+  await browser.controller.initializeSurvey(wavelengthSurvey());browser.controller.cancel();
+  browser.setView(123,56,3,27);const before=browser.camera();
+  for(let attempt=0;attempt<2;attempt++){
+    assert.equal(await browser.controller.switchMission('gaia'),false);
+    assert.equal(browser.controller.mission(),'spherex');
+    assert.deepEqual(browser.camera(),before);
+    assert.equal(browser.surveyImages.some(image=>image.url.includes('/Gaia/')),false);
+  }
+  assert.equal(browser.requests.filter(url=>url==='https://skies.esac.esa.int/Gaia/dr3/RGB/properties').length,2);
+});
+
+test('sky wavelength selection survives Gaia and stays independent of dated observations',async()=>{
   const browser=browserController();await browser.controller.initializeSurvey(wavelengthSurvey());
   const slider=browser.element('wavelength-slider');slider.value='10';slider.listeners.input();slider.listeners.change();
-  // No region: use whole-sky source changes for this part of the test.
   browser.controller.cancel();
   await browser.controller.switchMission('gaia');
   assert.equal(browser.element('wavelength-panel').hidden,true);
@@ -226,8 +495,9 @@ test('rectangle infrared mode uses the locked mosaic and never searches for date
   assert.equal(browser.fits(),fits);assert.equal(browser.requests.length,0);
   assert.equal(await browser.controller.loadSelectedObservations(),false);
   assert.equal(await browser.controller.loadEarlierObservations(),false);
-  assert.equal(await browser.controller.switchMission('gaia'),false);
 });
+
+
 
 test('live and buffered SPHEREx layers use the same display transfer and colour settings',async()=>{
   const browser=browserController();await browser.controller.initializeSurvey(wavelengthSurvey());
@@ -493,7 +763,8 @@ function publishedRelease(release=1){
     url:release===1?'https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube':`https://irsa.ipac.caltech.edu/data/hips/SPHEREx/test_dr${release}_cube`,
     release:`DR${release}`,revision:`test-revision-${release}`,channelIndex:1,
     properties:{creator_did:`ivo://IPAC/P/SPHEREx/DR${release}/cube`,hips_cube_depth:'3',em_min:'1e-6',em_max:'5e-6',
-      data_cube_crval3_arr:'1 3.293 5',hips_tile_format:'png'}
+      data_cube_crval3_arr:'1 3.293 5',hips_tile_format:'png',
+      t_min:'60789.75076',t_max:release===1?'61174.49276':'61234.5'}
   }};
 }
 
@@ -629,21 +900,36 @@ test('sky distance handles RA wraparound and polar regions', () => {
   assert.ok(separation>89 && separation<90);
 });
 
-test('survey tabs preserve the cropped region and observation remains resident', async () => {
+test('Gaia uses the original whole-sky switch while dated observations remain available', async () => {
   const browser=browserController();
   assert.equal(await browser.controller.loadSelectedObservations(),true);
   const state=browser.controller.state(),frame=state.frames.get('observation-0');
   const crop=browser.element('region-map').style.getPropertyValue('--region-clip');
-  for(const mission of ['spherex','gaia','spherex']){
+  for(const mission of ['spherex']){
     assert.equal(await browser.controller.switchMission(mission),true);
     assert.equal(browser.controller.active(),true);
     assert.equal(browser.controller.mission(),mission);
     assert.equal(browser.element('region-view').hidden,false);
     assert.equal(browser.element('region-map').style.getPropertyValue('--region-clip'),crop);
-    assert.equal(browser.layers.get('planetx-region-survey').getOpacity(),1);
+    const survey=browser.controller.regionSurvey();
+    assert.equal(browser.layers.get(survey.layer).getOpacity(),1);
     assert.equal(frame.image.getOpacity(),0);
     assert.equal(browser.controller.state(),state);
   }
+  for(const mission of ['gaia','spherex','gaia']){
+    assert.equal(await browser.controller.switchMission(mission),true);
+    assert.equal(browser.controller.active(),false);
+    assert.equal(browser.controller.mission(),mission);
+    assert.equal(browser.element('region-view').hidden,true);
+    assert.equal(browser.controller.state(),state);
+    assert.equal(browser.baseLayers.at(-1).url.includes('/Gaia/'),mission==='gaia');
+  }
+  assert.equal(browser.element('observation-filmstrip').hidden,true);
+  assert.equal(browser.element('load-history').hidden,true);
+  const requests=browser.requests.length;
+  assert.equal(await browser.controller.loadSelectedObservations(),false);
+  assert.equal(await browser.controller.loadEarlierObservations(),false);
+  assert.equal(browser.requests.length,requests);
   assert.equal(await browser.controller.switchMission('observation-0'),true);
   assert.equal(browser.layers.get('planetx-region-survey').getOpacity(),0);
   assert.equal(frame.image.getOpacity(),1);
@@ -861,4 +1147,98 @@ test('playback is unavailable until more than one observation is loaded',async()
   browser.controller.togglePlayback();
   assert.equal(browser.controller.playing(),false);
   assert.equal(browser.element('filmstrip-play').disabled,true);
+});
+
+test('hiding dates excludes them from scrubbing and playback without downloads, refits or deleting images',async()=>{
+  let now=0;
+  const browser=browserController({history:earlier(3),clock:{now:()=>now}});
+  await browser.controller.loadSelectedObservations();await browser.controller.loadEarlierObservations();
+  const state=browser.controller.state(),downloads=browser.requests.length,fits=browser.fits();
+  const image=state.frames.get('observation-2').image;
+  await browser.controller.hideObservation('observation-2');
+  assert.deepEqual(Array.from(browser.controller.observationTimeline(),entry=>entry.id),['observation-3','observation-1','observation-0']);
+  assert.equal(browser.element('observation-scrubber').max,'2');
+  assert.equal(await browser.controller.switchMission('observation-2'),false);
+  assert.equal(state.frames.get('observation-2').image,image);
+  assert.equal(state.frames.size,4);
+  const step=async time=>{now=time;await new Promise(resolve=>setImmediate(resolve));};
+  try{
+    browser.controller.togglePlayback();
+    assert.equal(browser.controller.mission(),'observation-3');
+    await step(250);assert.equal(browser.controller.mission(),'observation-1');
+    await step(500);assert.equal(browser.controller.mission(),'observation-0');
+    await step(750);assert.equal(browser.controller.mission(),'observation-3');
+    const slider=browser.element('observation-scrubber');slider.value='1';slider.listeners.input();
+    assert.equal(browser.controller.mission(),'observation-1');
+    assert.equal(browser.controller.playing(),false);
+    assert.equal(browser.requests.length,downloads);assert.equal(browser.fits(),fits);
+  }finally{browser.controller.stopPlayback();}
+});
+
+test('hiding the displayed image selects its nearest remaining date and restoring it preserves the current frame',async()=>{
+  const browser=browserController({history:earlier(3),clock:{now:()=>0}});
+  await browser.controller.loadSelectedObservations();await browser.controller.loadEarlierObservations();
+  await browser.controller.switchMission('observation-2');
+  const state=browser.controller.state(),downloads=browser.requests.length,fits=browser.fits();
+  await browser.controller.hideObservation('observation-2');
+  assert.equal(browser.controller.mission(),'observation-1');
+  assert.equal(state.frames.get('observation-2').image.getOpacity(),0);
+  assert.equal(state.frames.get('observation-1').image.getOpacity(),1);
+  assert.equal(browser.element('hidden-observations').hidden,false);
+  await browser.controller.restoreObservation('observation-2');
+  assert.equal(browser.controller.mission(),'observation-1');
+  assert.equal(browser.element('hidden-observations').hidden,true);
+  assert.equal(browser.controller.observationTimeline().length,4);
+  assert.equal(browser.requests.length,downloads);assert.equal(browser.fits(),fits);
+});
+
+test('all dates can be hidden and restored, keeping the filmstrip accessible with playback disabled',async()=>{
+  const browser=browserController({history:earlier(2)});
+  await browser.controller.loadSelectedObservations();await browser.controller.loadEarlierObservations();
+  const state=browser.controller.state(),downloads=browser.requests.length,fits=browser.fits();
+  for(const id of ['observation-0','observation-1','observation-2'])await browser.controller.hideObservation(id);
+  assert.equal(browser.controller.observationTimeline().length,0);
+  assert.equal(browser.controller.observationTimeline({includeHidden:true}).length,3);
+  assert.equal(browser.element('observation-filmstrip').hidden,false);
+  assert.equal(browser.element('filmstrip-date').textContent,'All dates hidden');
+  assert.equal(browser.element('filmstrip-play').disabled,true);
+  assert.equal(browser.element('observation-scrubber').disabled,true);
+  assert.equal(browser.element('hidden-observation-list').children.length,3);
+  assert.ok([...state.frames.values()].every(frame=>frame.image.getOpacity()===0));
+  await browser.controller.restoreObservation('observation-1');
+  assert.equal(browser.controller.mission(),'observation-1');
+  assert.equal(browser.element('filmstrip-play').disabled,true);
+  await browser.controller.restoreObservation();
+  assert.equal(browser.controller.observationTimeline().length,3);
+  assert.equal(browser.element('filmstrip-play').disabled,false);
+  assert.equal(browser.controller.mission(),'observation-1');
+  assert.equal(browser.requests.length,downloads);assert.equal(browser.fits(),fits);
+});
+
+test('hidden dates persist when loading more history and reset when the observation set is reloaded',async()=>{
+  const browser=browserController({history:url=>new URL(url,'http://localhost').searchParams.get('before').startsWith('2026-08-25')?earlier(10):earlier(1,10)});
+  await browser.controller.loadSelectedObservations();await browser.controller.loadEarlierObservations();
+  await browser.controller.hideObservation('observation-1');
+  await browser.controller.loadEarlierObservations();
+  assert.equal(browser.controller.state().frames.size,12);
+  assert.equal(browser.controller.observationTimeline().length,11);
+  assert.equal(browser.controller.state().hiddenObservations.has('observation-1'),true);
+  await browser.controller.loadSelectedObservations();
+  assert.equal(browser.controller.state().hiddenObservations.size,0);
+  assert.equal(browser.element('hidden-observations').hidden,true);
+});
+
+test('thumbnail hide buttons do not start a strip drag, and changing exclusions pauses playback',async()=>{
+  const browser=browserController({history:earlier(2),clock:{now:()=>0}});
+  await browser.controller.loadSelectedObservations();await browser.controller.loadEarlierObservations();
+  browser.controller.togglePlayback();
+  const tiles=browser.element('filmstrip-track').children;
+  const hide=tiles[1].hideButton;
+  browser.element('filmstrip-window').listeners.pointerdown({button:0,target:{closest:()=>hide},
+    preventDefault(){throw new Error('Hide button must not initiate dragging');}});
+  let stopped=false;hide.listeners.click({stopPropagation(){stopped=true;}});
+  assert.equal(stopped,true);assert.equal(browser.controller.playing(),false);
+  assert.equal(browser.controller.state().hiddenObservations.has('observation-1'),true);
+  browser.element('restore-observations').listeners.click();
+  assert.equal(browser.controller.state().hiddenObservations.size,0);
 });

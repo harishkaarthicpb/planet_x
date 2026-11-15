@@ -7,6 +7,11 @@ html, body {
   color: #fff;
 }
 
+body.gaia-view :is(#region-panel, #preload-progress) { display: none; }
+body:is(.dss2-view,.wise-view) #preload-progress,
+body:is(.dss2-view,.wise-view) #region-panel > :not(#back-to-sky),
+body:is(.dss2-view,.wise-view):not(.region-comparison) #region-panel { display: none; }
+
 #sky-map {
   position: fixed;
   inset: 0;
@@ -68,6 +73,25 @@ html, body {
   background: #000a;
   font: 10px/1.4 system-ui, sans-serif;
   text-decoration: none;
+}
+
+#survey-dates {
+  position: fixed; top: max(16px, env(safe-area-inset-top)); right: 16px;
+  z-index: 10; box-sizing: border-box; width: min(390px, calc(100% - 32px));
+  max-height: 45dvh; overflow-y: auto; padding: 10px 12px;
+  border: 1px solid #ffffff30; border-radius: 10px;
+  background: #10141be6; color: #e5ebf3; font: 11px/1.5 system-ui, sans-serif;
+}
+#survey-dates p { margin: 0 0 5px; }
+#survey-date-current { font-weight: 600; }
+#survey-date-match { color: #ffe66d; }
+#survey-dates summary { cursor: pointer; color: #b5c8df; }
+#survey-dates dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; }
+#survey-dates dd { margin: 0; }
+#survey-dates a { color: #b5c8df; }
+@media (max-width: 760px) {
+  #survey-dates { top: max(90px, calc(env(safe-area-inset-top) + 74px)); font-size: 10px; }
+  #coordinate-panel[open] ~ #survey-dates { display: none; }
 }
 
 #coordinate-panel {
@@ -243,7 +267,14 @@ body.region-comparison #draw-region { display: none; }
 @media (prefers-reduced-motion: reduce) {
   #observation-filmstrip.playing #filmstrip-track { transition: none; }
 }
-.filmstrip-tile { box-sizing: border-box; flex: 0 0 64px; width: 64px; height: 64px; border: 2px solid transparent; border-radius: 4px; overflow: hidden; background: #10141b; }
+.filmstrip-tile { position: relative; box-sizing: border-box; flex: 0 0 64px; width: 64px; height: 64px; border: 2px solid transparent; border-radius: 4px; overflow: hidden; background: #10141b; }
+.filmstrip-hide { position: absolute; top: 0; right: 0; width: 24px; height: 24px; padding: 0; border: 1px solid #ffffff70; border-radius: 3px; background: #10141be6; color: #fff; font: 18px/1 system-ui, sans-serif; cursor: pointer; z-index: 1; }
+.filmstrip-hide:hover { background: #63343d; }
+.filmstrip-hide:focus-visible, #hidden-observations button:focus-visible { outline: 2px solid #ffe66d; outline-offset: -2px; }
+#hidden-observations { margin-top: 8px; padding: 8px; border: 1px solid #ffffff30; border-radius: 6px; }
+.hidden-observations-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#hidden-observation-list { display: flex; flex-wrap: wrap; gap: 5px; max-height: 100px; overflow-y: auto; margin-top: 6px; }
+#hidden-observations button { padding: 4px 7px; border: 1px solid #ffffff40; border-radius: 5px; background: #202a38; color: #dce5f2; font: inherit; cursor: pointer; }
 .filmstrip-tile img { display: block; width: 60px; height: 46px; object-fit: contain; background: #000; pointer-events: none; }
 .filmstrip-tile span { display: block; color: #aeb8c7; font: 8px/14px ui-monospace, monospace; text-align: center; }
 .filmstrip-tile.selected { border-color: #ffe66d; }
@@ -253,13 +284,10 @@ body.region-comparison #draw-region { display: none; }
 #observation-scrubber:focus-visible { outline: 2px solid #a5c8ff; outline-offset: 3px; border-radius: 4px; }
 #observation-scrubber:disabled { opacity: .4; cursor: default; }
 #filmstrip-help { color: #aeb8c7; font-size: 10px; }
-body.has-filmstrip #mission-switch { bottom: max(160px, calc(env(safe-area-inset-bottom) + 148px)); }
+body.has-filmstrip #mission-switch,
+body.has-filmstrip #status { bottom: calc(max(52px, calc(env(safe-area-inset-bottom) + 40px)) + var(--observation-player-height, 96px) + 12px); }
 body.has-multiple-observations #mission-switch [data-mission^="observation-"] { display: none; }
-body.has-filmstrip #preload-progress { bottom: max(208px, calc(env(safe-area-inset-bottom) + 196px)); }
-body.has-filmstrip #status { bottom: max(160px, calc(env(safe-area-inset-bottom) + 148px)); }
-body.has-filmstrip:has(#observation-details[open]) #mission-switch,
-body.has-filmstrip:has(#observation-details[open]) #status { bottom: max(250px, calc(env(safe-area-inset-bottom) + 238px)); }
-body.has-filmstrip:has(#observation-details[open]) #preload-progress { bottom: max(298px, calc(env(safe-area-inset-bottom) + 286px)); }
+body.has-filmstrip #preload-progress { bottom: calc(max(52px, calc(env(safe-area-inset-bottom) + 40px)) + var(--observation-player-height, 96px) + 60px); }
 #spectrum-player {
   position: fixed; left: 50%; bottom: max(52px, calc(env(safe-area-inset-bottom) + 40px)); transform: translateX(-50%);
   z-index: 11; box-sizing: border-box; width: min(600px, calc(100% - 32px)); padding: 10px 12px;

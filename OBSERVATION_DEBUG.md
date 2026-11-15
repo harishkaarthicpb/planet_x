@@ -1,5 +1,184 @@
 # Current simplified rectangle flow
 
+## Hide observation dates from the timeline
+
+Each Time-filmstrip thumbnail has a keyboard-accessible × button labelled
+with its UTC date. Hiding a date removes it from the scrubber, thumbnail strip,
+date buttons and playback sequence. The science image, layer, thumbnail and
+download reference remain loaded. Hidden dates can be restored individually
+or together from the Hidden dates section below the strip.
+
+Changing the included dates pauses playback. Hiding the displayed image shows
+the next remaining chronological image, or the preceding one at the end of
+the sequence. If every date is hidden, playback and scrubbing are disabled,
+the observation layer is hidden, and the filmstrip remains open with restore
+controls. Restoring the first visible date displays it; otherwise restoration
+preserves the current frame. Counts and chronological positions describe the
+included dates only. Direct attempts to select an excluded date are ignored.
+
+Exclusions belong to the currently loaded region's observation set. They
+survive additional history downloads and source switching, and reset when
+that set is reloaded or the region is cleared. They never change the search
+anchor, original metadata, FITS bytes or sky coordinates. No extra image
+downloads or camera fitting are needed to hide or restore a date.
+
+Thumbnail-button pointer events bypass filmstrip dragging. A ResizeObserver
+positions the source switcher and messages above the player's actual height,
+including the restore controls. All 130 Node tests pass, including skipped
+playback/scrub frames, hiding the current/last/all frames, individual and bulk
+restore, retained images, history and reset behavior, and pointer isolation.
+
+## Time search: restore collection-scoped IRSA queries
+
+The user reported HTTP 502 at `IRSA single-image search`, before FITS download,
+at multiple positions. Local history shows that `e3589fb` explicitly scopes
+SIA searches to QR3/DR1 wide/deep collections, whereas `91a758c` removed those
+constraints in favor of `INSTRUMENT=SPHEREx`. IRSA's current SPHEREx guide says
+users must supply COLLECTION:
+https://irsa.ipac.caltech.edu/spherex-archive-documentation/spherex-data-access/.
+
+The collection-scoped approach is restored. Single-image discovery searches
+`spherex_qr3` and `spherex_qr3_deep`, then `spherex_dr1` and
+`spherex_dr1_deep` only after a valid QR3 response with no usable image. Each
+response is capped at 1,000 records; the newest usable returned image is
+selected, within a shared 90-second budget. Earlier/newer-date searches and
+legacy rectangle searches explicitly include all four image collections.
+The whole-sky map resolver remains independent and still discovers newer
+compatible published maps. Future spectral-image releases require updating
+the collection list or adding verified collection discovery.
+
+An HTTP failure still stops the search, preserving the actual failure instead
+of silently treating it as an empty result. All 125 Node tests pass, including
+collection scopes, latest returned selection, empty-result DR1 fallback,
+UTC history bounds and stopping on gateway errors. The direct live search
+reproduction was not approved, so disappearance of the reported 502 has not
+been verified. Restart the Node server to load this backend change.
+
+## Observation dates and latest SPHEREx reference
+
+A persistent date panel shows the current view's observation time or survey
+observation range in UTC. Compare dates expands the four survey ranges,
+SPHEREx release-check state and current map publication date. Observation
+dates and map publication dates are explicitly separate. The panel remains
+visible when tools are hidden; on narrow screens it yields to expanded Sky
+tools to avoid covering the settings.
+
+`survey-dates.mjs` reads valid `t_min`/`t_max` MJD bounds from the actual map
+metadata. For the identified Gaia DR3 RGB map, which omits these fields, it
+uses the documented 2014-07-25 to 2017-05-28 DR3 observation interval and links
+to ESA's DR3 documentation. That fallback is restricted to the DR3 dataset;
+other releases need their own real metadata. Unknown or invalid ranges are
+labelled unavailable, never inferred from a publication date. A selected
+dated SPHEREx frame displays its exact `observedStart` timestamp.
+
+The reference is always the latest verified compatible SPHEREx whole-sky
+release discovered by the existing startup/daily release checks. It remains
+the reference while another source or an older manually selected exposure is
+displayed. A failed/stale check or an advertised incompatible newer map is
+labelled, rather than claiming the retained image is the latest. Reference
+date comparisons update when the verified SPHEREx metadata changes.
+
+Gaia DR3 (2014–2017) and DSS2 (1975–1999) have no selectable SPHEREx-era map
+epochs. Their current available maps are retained with a historical/no-match
+message, not retimed, interpolated or replaced with an unrelated satellite.
+Even overlapping survey coverage intervals are not claimed to be the same
+observation date; combined maps can mix epochs within their footprint. This
+does not add an epoch-selection API or discovery of future Gaia data releases.
+
+All 119 Node tests pass, including UTC conversion, missing/invalid bounds,
+Gaia date provenance, publication/observation separation, explicit epoch gaps,
+selected exposure dates, stale checks and reference updates after a new map.
+Restart the server to enable `/survey-dates.mjs`, then refresh the page.
+
+## WISE color comparison
+
+The WISE tab uses NASA/IPAC IRSA's published color HiPS service:
+`https://irsa.ipac.caltech.edu/data/hips/CDS/AllWISE/RGB-W4-W2-W1`.
+It validates the `ivo://CDS/P/allWISE/color` dataset identity, equatorial image
+geometry, color product and JPEG format. Metadata is revalidated when the
+tab is selected. Only this WISE color composite is added; no NEOWISE
+Reactivation or time-series endpoint is queried.
+
+The assigned infrared colors are red W4 (22 µm), green W2 (4.6 µm) and blue
+W1 (3.4 µm). Whole-sky switches preserve RA/Dec, field of view and rotation.
+An active Time rectangle keeps the same viewer and exact crop, and can return
+to its previously loaded SPHEREx frames. SPHEREx-only controls are inactive
+in WISE. Returning from whole-sky navigation does not reopen an old crop.
+
+The date panel shows IRSA's numeric MJD bounds for this map: 55378–55414,
+or 2010-07-01 to 2010-08-06 UTC, separately from its 2019-05-20 publication
+date. These are the bounds supplied for this archive visualization, not the
+dates of newer NEOWISE products or the lifetime of the spacecraft. The map
+is labelled as a historical comparison with SPHEREx.
+
+Live checks on 2026-11-15 returned HTTP 200 for the properties and real tiles
+`Norder0/Dir0/Npix0.jpg` and `Norder2/Dir0/Npix159.jpg`. The properties and
+tile responses allow cross-origin access. Official source listing:
+https://irsa.ipac.caltech.edu/data/hips/list.
+
+All 124 Node tests pass, including view/crop preservation, map identity and
+error restoration, metadata revalidation, observation-date display and the
+absence of NEOWISE requests. Browser/WebGL appearance remains unverified.
+
+## DSS2 Color comparison
+
+The DSS2 Color tab uses the MAST/STScI mirror explicitly listed by CDS:
+`https://stpubdata.s3.us-east-1.amazonaws.com/mast/skybackgrounds/DSSColor`.
+Reference: https://aladin.cds.unistra.fr/ (official HiPS alternatives list).
+It replaces the survey in the same whole-sky Aladin viewer, without changing
+ICRS position, zoom, rotation or projection. In an active Time rectangle it
+uses the same comparison viewer and exact crop. Leaving the rectangle and
+browsing elsewhere does not cause a later DSS2/SPHEREx switch to reopen the
+old crop. Loaded dated observations remain available when returning to Time.
+Gaia retains its separately restored original loading path.
+
+Every DSS2 selection fetches/revalidates live `/properties` metadata with
+`cache: 'no-cache'`; no map release is bundled or pinned. It verifies the
+`ivo://CDS/P/DSS2/color` identifier, equatorial image geometry, color product
+and JPEG format. Aladin then loads the survey's own format and coordinate
+metadata. The published map date is included in the credit tooltip. DSS2 is
+historical photographic imagery from 1975–1999, not current observations.
+The About DSS2 Color disclosure explains this distinction. SPHEREx observation
+loading, history, wavelength and region drawing controls are inactive in DSS2;
+Back to whole sky remains available in a locked comparison.
+
+Live checks on 2026-11-15 returned HTTP 200 for MAST's properties and real
+`Norder0/Dir0/Npix0.jpg` and `Norder2/Dir0/Npix159.jpg` tiles. An Origin request
+also confirmed `Access-Control-Allow-Origin: *` for the metadata endpoint.
+The metadata reports map release `2019-05-07T10:55Z`; S3 reports a properties
+object Last-Modified date of 2026-03-12. These are publication/storage dates,
+not observation epochs. No alternative host is used automatically.
+
+All 112 Node tests pass, including whole-sky camera preservation at ordinary,
+RA-wrap and polar positions; exact crop preservation; returning from an old
+selection; live metadata revalidation; dataset rejection; failure restoration;
+and retained observation frames. The Chrome rendering check was not approved,
+so actual browser/WebGL appearance remains unverified.
+
+## Gaia DR3 comparison
+
+Gaia uses the loading and switching path from the user's supplied older code.
+The app fetches `https://skies.esac.esa.int/Gaia/dr3/RGB/properties` with a
+15-second timeout and normal browser caching, validates the DR3 identifier,
+and remembers successful metadata for the session. It passes only the survey
+name and success/error callbacks to `A.HiPS`, letting Aladin retrieve and
+interpret the survey's live metadata. `skyMap.setBaseImageLayer` replaces the
+base layer in the same viewer, preserving its ICRS position, zoom and rotation.
+
+Gaia exits the locked region view, as in the older implementation. Returning
+to SPHEREx restores the whole-sky base layer; previously loaded observations
+can still be reopened through their date controls. SPHEREx keeps its newer
+wavelength, region and playback features. Its exploration tools are hidden in
+Gaia. Infrared playback keeps its exclusive SPHEREx view.
+
+The bundled Gaia metadata, private parser call, background preload, and
+visibility-only whole-sky layer cache have been removed. No alternative host
+or satellite is used. Tests cover the original HiPS options, normal metadata
+fetch caching, unchanged coordinates, metadata timeout/retry, prior-survey
+restoration and returning to retained observations. The user's console showed
+ESA tile connection timeouts; restoring the older code cannot guarantee ESA
+availability. Live tile delivery has not been reverified.
+
 ## Compact viewing controls
 
 Sky tools start collapsed. The spectrum player keeps wavelength, Play/Pause
@@ -119,7 +298,7 @@ second; releasing the slider commits the final band immediately. It does not
 replace the layer, move the camera, or request observation FITS downloads.
 Aladin fetches the selected plane's visible tiles directly from the survey.
 
-The slider is hidden for Gaia and locked region comparisons. Its selection
+The slider is hidden for locked region comparisons. Its selection
 survives switching sources and is preserved at the nearest compatible physical
 wavelength when the official map release changes. A cached SPHEREx region
 survey starts at the selected channel; Infrared mode can sweep it independently.
@@ -153,20 +332,20 @@ reprocessing of the same date. Nothing polls while the page is closed.
 
 Weekly images enter through IRSA's searchable observations, independently of
 whole-sky releases; the app does not construct a whole-sky mosaic from them.
-Discovery uses SIA `INSTRUMENT=SPHEREx` rather than fixed DR/QR collection names,
-and permits official numbered DR/QR level-2 FITS paths. Availability depends on
-IRSA publishing and indexing the data. Search results remain capped at 1,000
-records. Future DR2 discovery and failure handling are tested with synthetic
-release metadata; browser/WebGL upgrades have not been live verified.
+Observation discovery uses the four documented DR1/QR3 wide/deep COLLECTION
+names and permits official numbered DR/QR level-2 FITS paths. Availability
+depends on IRSA publishing and indexing the data. Search results remain capped
+at 1,000 records. Future whole-sky DR2 discovery and failure handling are tested
+with synthetic map metadata; browser/WebGL upgrades have not been live verified.
 
 ## Discovery coverage
 
 Initial discovery now asks for up to 1,000 records and chooses the newest usable
 returned exposure covering the selected center. This replaces the arbitrary
 first-row/MAXREC=1 choice, which could start the earlier-date search too far
-back. All searchable SPHEREx collections participate through the instrument
-filter, including newly published releases. A capped response cannot prove
-global newestness.
+back. The documented QR3 wide/deep collections are searched first, with DR1
+wide/deep used after an empty usable QR3 result. A capped response cannot
+prove global newestness.
 
 Earlier-date searches include searchable wide/deep collections. Per
 https://irsa.ipac.caltech.edu/spherex-archive-documentation/spherex-data-access/,
@@ -222,7 +401,7 @@ the filmstrip/playback includes all loaded dates. Adding dates pauses playback
 and preserves the displayed image.
 
 The new `mode=history` API uses SIA `TIME=-Inf <anchor-midnight-MJD>` and the
-SPHEREx instrument filter. IRSA's TIME format is documented at
+four documented SPHEREx image collections. IRSA's TIME format is documented at
 https://irsa.ipac.caltech.edu/ibe/sia.html. Results are capped at 1,000 rows;
 the selector chooses the newest distinct dates within those returned rows,
 not a proven global latest-ten result. The UI reports a capped search.

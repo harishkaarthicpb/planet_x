@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1">
-    <meta name="description" content="Explore SPHEREx and Gaia DR3 sky imagery, one layer at a time.">
+    <meta name="description" content="Explore SPHEREx infrared imagery, compare it with WISE, DSS2 Color and Gaia, and browse wavelengths and dated observations.">
     <title>Planet X — Sky</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="style.css">
@@ -88,6 +88,18 @@
         <p id="region-mode-note" class="region-note">Time loads dated SPHEREx observations, keeping the same detector band and one image per UTC day. Infrared plays the sky mosaic through its wavelength bands.</p>
         <p id="data-freshness" role="status" aria-live="polite">Checking the published SPHEREx map when the viewer loads…</p>
       </section>
+      <details>
+        <summary>About Gaia</summary>
+        <p class="region-note">Gaia shows an optical colour map from Data Release 3. Switch between Gaia and SPHEREx to compare the same sky position and zoom. Region and playback tools are available in SPHEREx.</p>
+      </details>
+      <details>
+        <summary>About DSS2 Color</summary>
+        <p class="region-note">DSS2 Color is an optical composite hosted by MAST at STScI. It uses historical observations from 1975–1999. The viewer checks the currently published map when you select DSS2; it is not live imagery. Switching preserves the sky position and zoom.</p>
+      </details>
+      <details>
+        <summary>About WISE Color</summary>
+        <p class="region-note">WISE Color is an archived infrared composite from NASA/IPAC IRSA: W4 (22 µm) is red, W2 (4.6 µm) is green, and W1 (3.4 µm) is blue. These are assigned infrared colors. Observation dates come from the archive metadata. This view uses WISE imagery only.</p>
+      </details>
     </details>
     <section id="wavelength-panel" aria-label="SPHEREx sky wavelength" hidden>
       <div class="wavelength-heading">
@@ -103,7 +115,9 @@
     <p id="preload-progress" role="status" aria-live="polite" hidden></p>
     <div id="mission-switch" role="group" aria-label="Sky data source">
       <button type="button" data-mission="spherex" aria-pressed="true" disabled>SPHEREx</button>
-      <button type="button" data-mission="gaia" aria-pressed="false" title="Gaia DR3" disabled>Gaia</button>
+      <button type="button" data-mission="wise" aria-pressed="false" title="WISE infrared color · NASA/IPAC IRSA" disabled>WISE</button>
+      <button type="button" data-mission="dss2" aria-pressed="false" title="DSS2 Color · MAST/STScI" disabled>DSS2 Color</button>
+      <button type="button" data-mission="gaia" aria-pressed="false" title="Gaia Data Release 3" disabled>Gaia</button>
       <button type="button" data-mission="observation-0" aria-pressed="false" disabled>Observation</button>
       <button id="load-history" type="button" hidden>Load 10 earlier dates</button>
     </div>
@@ -117,10 +131,17 @@
         aria-describedby="filmstrip-help" disabled>
       <details id="observation-details" class="player-details">
         <summary>Thumbnails &amp; help</summary>
-        <div id="filmstrip-window" class="filmstrip-window" aria-hidden="true">
+        <div id="filmstrip-window" class="filmstrip-window" role="group" aria-label="Observation thumbnails and hide controls">
           <div id="filmstrip-track"></div>
           <span class="filmstrip-playhead"></span>
         </div>
+        <section id="hidden-observations" aria-label="Restore hidden observation dates" hidden>
+          <div class="hidden-observations-heading">
+            <span id="hidden-observation-count" role="status"></span>
+            <button id="restore-observations" type="button">Restore all</button>
+          </div>
+          <div id="hidden-observation-list"></div>
+        </section>
         <small id="filmstrip-help">Load earlier dates to scrub through observations.</small>
       </details>
     </section>
@@ -140,6 +161,22 @@
     </section>
     <div id="cursor-coordinates" aria-label="Cursor coordinates in equatorial ICRS" aria-live="off"
       title="Sky coordinates under your cursor, in ICRS degrees">RA — · Dec — · ICRS</div>
+    <aside id="survey-dates" aria-label="Observation dates and SPHEREx reference" hidden>
+      <p id="survey-date-current" role="status"></p>
+      <p id="survey-date-match"></p>
+      <details>
+        <summary>Compare dates</summary>
+        <p id="survey-date-reference"></p>
+        <dl>
+          <dt>SPHEREx</dt><dd id="survey-date-spherex"></dd>
+          <dt>Gaia DR3</dt><dd id="survey-date-gaia"></dd>
+          <dt>DSS2 Color</dt><dd id="survey-date-dss2"></dd>
+          <dt>WISE</dt><dd id="survey-date-wise"></dd>
+        </dl>
+        <p id="survey-date-publication"></p>
+        <a id="survey-date-source" target="_blank" rel="noopener noreferrer" hidden>Observation-date source</a>
+      </details>
+    </aside>
     <a id="survey-credit" href="https://irsa.ipac.caltech.edu/Missions/spherex.html"
       target="_blank" rel="noopener noreferrer">SPHEREx · NASA/Caltech/IPAC</a>
     <noscript>Enable JavaScript to display the sky map.</noscript>

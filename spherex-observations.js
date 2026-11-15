@@ -8,6 +8,10 @@ const ARCHIVE = 'https://irsa.ipac.caltech.edu';
 const WAVELENGTH_METERS = 3.293e-6;
 const MAX_RECORDS = 200; // We need two dates, not an exhaustive latest-date search.
 const DISCOVERY_MAX_RECORDS = 1000;
+// SPHEREx's SIA guide requires explicit collections. Restrict searches to its
+// published spectral-image tables rather than an archive-wide instrument scan.
+// https://irsa.ipac.caltech.edu/spherex-archive-documentation/spherex-data-access/
+const COLLECTIONS=['spherex_qr3','spherex_qr3_deep','spherex_dr1','spherex_dr1_deep'];
 const cutouts = new Map();
 
 function validImageUrl(value) {
@@ -155,9 +159,7 @@ async function searchObservations(region, {mode='rectangle',requestId=randomUUID
     const history=historyOptions(newer?{...options,before:options.after}:options);
     const {ra,dec}=region.position;
     const query=new URL('/SIA',ARCHIVE);
-    // Query the instrument, not fixed release names: new searchable DR/QR
-    // collections (including deep fields) participate without a code update.
-    query.searchParams.set('INSTRUMENT','SPHEREx');
+    for(const collection of COLLECTIONS)query.searchParams.append('COLLECTION',collection);
     query.searchParams.set('POS',`CIRCLE ${ra} ${dec} 0.0001`);
     query.searchParams.set('TIME',newer?`${history.beforeMjd+1} +Inf`:`-Inf ${history.beforeMjd}`);
     query.searchParams.set('DPTYPE','image');
@@ -176,22 +178,27 @@ async function searchObservations(region, {mode='rectangle',requestId=randomUUID
     recordCount=(resource.TABLE.DATA?.TABLEDATA || []).length;
     searchLimited=resources.some(r=>r.INFO_ARRAY?.some(i=>i['<xmlattr>']?.value==='OVERFLOW')) || recordCount>=DISCOVERY_MAX_RECORDS;
   } else if (mode==='single') {
-    // Discover all currently searchable releases. A bounded SIA response can
-    // establish only the newest usable returned exposure, not global newestness.
+    // Restore the collection-scoped search used by e3589fb: QR3 wide/deep,
+    // then DR1 wide/deep only when QR3 has no usable image. An HTTP failure
+    // stops the search; it is not silently retried against another collection.
+    recordCount=0;searchLimited=false;
+    const deadline=performance.now()+90000;
     const {ra,dec}=region.position;
     const {footprintContainsRegion}=await import('./sky-region.mjs');
-    const query=new URL('/SIA',ARCHIVE);
-    query.searchParams.set('INSTRUMENT','SPHEREx');
-    query.searchParams.set('POS',`CIRCLE ${ra} ${dec} 0.0001`);
-    query.searchParams.set('DPTYPE','image');
-    query.searchParams.set('RESPONSEFORMAT','JSON');query.searchParams.set('MAXREC',String(DISCOVERY_MAX_RECORDS));
-    const payload=await archiveRequest(query,90000,'IRSA single-image search',r=>r.json(),{requestId,log});
-    const resource=payload.VOTABLE?.RESOURCE_ARRAY?.find(r=>r.TABLE);
-    recordCount=resource?.TABLE.DATA?.TABLEDATA?.length || 0;
-    searchLimited = resource?.INFO_ARRAY?.some(i=>i['<xmlattr>']?.value==='OVERFLOW') ||
-      (resource?.TABLE.DATA?.TABLEDATA?.length || 0)>=DISCOVERY_MAX_RECORDS;
-    const first=exposureRows(payload,{anyBand:true}).find(row=>footprintContainsRegion(row.s_region,[[ra,dec]]));
-    if (first) selected=[first];
+    for(const collections of [COLLECTIONS.slice(0,2),COLLECTIONS.slice(2)]){
+      const query=new URL('/SIA',ARCHIVE);
+      for(const collection of collections)query.searchParams.append('COLLECTION',collection);
+      query.searchParams.set('POS',`CIRCLE ${ra} ${dec} 0.0001`);
+      query.searchParams.set('DPTYPE','image');
+      query.searchParams.set('RESPONSEFORMAT','JSON');query.searchParams.set('MAXREC',String(DISCOVERY_MAX_RECORDS));
+      const payload=await archiveRequest(query,Math.max(1,Math.ceil(deadline-performance.now())),'IRSA single-image search',r=>r.json(),{requestId,log});
+      const resource=payload.VOTABLE?.RESOURCE_ARRAY?.find(r=>r.TABLE);
+      recordCount+=resource?.TABLE.DATA?.TABLEDATA?.length || 0;
+      searchLimited ||= resource?.INFO_ARRAY?.some(i=>i['<xmlattr>']?.value==='OVERFLOW') ||
+        (resource?.TABLE.DATA?.TABLEDATA?.length || 0)>=DISCOVERY_MAX_RECORDS;
+      const first=exposureRows(payload,{anyBand:true}).find(row=>footprintContainsRegion(row.s_region,[[ra,dec]]));
+      if(first){selected=[first];break;}
+    }
     if (!selected) throw new Error('No SPHEREx FITS image overlapping this rectangle was returned.');
   } else if (mode==='point') {
     const payload=await runAsyncTap(buildTapQuery(region),{maxWaitMs:150000,requestId,log});
@@ -200,7 +207,7 @@ async function searchObservations(region, {mode='rectangle',requestId=randomUUID
     searchLimited=recordCount>=MAX_RECORDS;
   } else {
     const query = new URL('/SIA', ARCHIVE);
-    query.searchParams.set('INSTRUMENT','SPHEREx');
+    for(const collection of COLLECTIONS)query.searchParams.append('COLLECTION',collection);
     query.searchParams.set('POS',`POLYGON ${region.corners.flat().join(' ')}`);
     query.searchParams.set('BAND',String(WAVELENGTH_METERS));
     query.searchParams.set('RESPONSEFORMAT','JSON');query.searchParams.set('MAXREC',String(MAX_RECORDS));

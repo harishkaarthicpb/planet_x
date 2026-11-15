@@ -277,3 +277,54 @@ test('single search does not retry or change collections after a gateway error',
    assert.equal(count,1);
  }finally{globalThis.fetch=original;}
 });
+
+test('earlier dates are strictly before the anchor UTC day, distinct, same band, and capped at ten',()=>{
+ const {selectEarlierDates}=require('../spherex-observations');
+ const rows=[row('current',61300.1),row('future',61301),row('same-day',61300.8)];
+ for(let i=15;i>=1;i--)rows.push(row(`old-${i}`,61300-i+.25),row(`duplicate-${i}`,61300-i+.1));
+ const wrong=row('wrong-band',61299.9);wrong[4]='SPHEREx-D2';rows.push(wrong);
+ const options={before:new Date((61300.5-40587)*86400000).toISOString(),band:'SPHEREx-D4',limit:10};
+ const selected=selectEarlierDates(payload(rows),options);
+ assert.deepEqual(selected.map(r=>r.obs_id),Array.from({length:10},(_,i)=>`old-${i+1}`));
+ assert.equal(selectEarlierDates(payload([]),options).length,0);
+ assert.throws(()=>selectEarlierDates(payload([]),{...options,limit:11}),/between 1 and 10/);
+});
+
+test('history route searches both collections before UTC midnight and reports capped results',async()=>{
+ const original=globalThis.fetch,calls=[];
+ globalThis.fetch=async url=>{
+   const parsed=new URL(url);calls.push(parsed);
+   assert.deepEqual(parsed.searchParams.getAll('COLLECTION'),['spherex_qr3','spherex_dr1']);
+   assert.equal(parsed.searchParams.get('TIME'),'-Inf 61300');
+   assert.equal(parsed.searchParams.get('MAXREC'),'1000');
+   assert.match(parsed.searchParams.get('POS'),/^CIRCLE /);
+   const outside=row('off-center',61299.9,'POLYGON ICRS 20 20 21 20 21 21 20 21');
+   const usable=row('usable-same-day',61299.8);
+   const data=payload([outside,usable,row('current',61300),row('duplicate',61299.7),...Array.from({length:12},(_,i)=>row(`older-${i}`,61298-i))]);
+   data.VOTABLE.RESOURCE_ARRAY[0].INFO_ARRAY[0]['<xmlattr>'].value='OVERFLOW';
+   return {ok:true,status:200,json:async()=>data};
+ };
+ try{
+   const params=new URLSearchParams({corners:JSON.stringify(rectangle),mode:'history',before:new Date((61300.5-40587)*86400000).toISOString(),band:'SPHEREx-D4',limit:'10'});
+   const res=response();await handleObservationRequest({method:'GET',url:`/api/spherex/observations?${params}`},res);
+   assert.equal(res.status,200);const data=JSON.parse(res.body);
+   assert.equal(data.observations.length,10);assert.equal(data.observations[0].id,'usable-same-day');
+   assert.ok(data.observations.every(o=>o.band==='SPHEREx-D4' && /^\/api\/spherex\/cutout\/[a-f0-9]{64}$/.test(o.cutoutUrl)));
+   assert.equal(data.searchLimited,true);
+   assert.equal(data.selectionRule,'earlier-distinct-UTC-dates-from-returned-rows');
+   assert.equal(calls.length,1,'Search does not download images');
+ }finally{globalThis.fetch=original;}
+});
+
+test('invalid history filters are rejected before archive access',async()=>{
+ const original=globalThis.fetch;let calls=0;
+ globalThis.fetch=async()=>{calls++;throw new Error('Must not reach the archive');};
+ try{
+   for(const invalid of [{before:'invalid'},{before:'2026-02-30'},{band:'SPHEREx-D9'},{limit:'11'},{limit:'0'}]){
+     const params=new URLSearchParams({corners:JSON.stringify(rectangle),mode:'history',before:'2026-09-22',band:'SPHEREx-D2',limit:'10',...invalid});
+     const res=response();await handleObservationRequest({method:'GET',url:`/api/spherex/observations?${params}`},res);
+     assert.equal(res.status,400);
+   }
+   assert.equal(calls,0);
+ }finally{globalThis.fetch=original;}
+});

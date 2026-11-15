@@ -1,5 +1,69 @@
 # Current simplified rectangle flow
 
+## Observation filmstrip
+
+Play/Pause loops resident observations at four frames per second. Starting from
+the newest frame begins at the oldest date; starting elsewhere continues from
+the current frame. Playback uses animation-frame timing, avoids catch-up bursts
+after slow frames, and never refits the camera or downloads additional images.
+Manual scrubbing/source changes, leaving or clearing the region, a hidden tab,
+and a changed set of loaded dates pause it. Play is disabled with fewer than two
+observations. The filmstrip's visual transition respects reduced-motion settings.
+Controller tests verify timing, wraparound, pause conditions, and zero additional
+downloads/camera refits. Browser playback has not been live verified.
+
+The locked region now has a camera-roll-style filmstrip, ordered oldest to
+newest. Drag the thumbnails or the native range slider to switch resident
+observation frames. Keyboard arrows also work on the slider. The fixed playhead
+and UTC date/count identify the selected frame. With only one observation, the
+slider is disabled and the UI prompts the user to load earlier dates.
+
+Scrubbing changes layer visibility synchronously, without downloads or camera
+refits. Returning from whole-sky browsing still fits the selected region once.
+Thumbnails are display-only, letterboxed previews of the downloaded FITS pixel
+array using the image's display cuts; they retain detector orientation while
+the main viewer uses celestial WCS. FITS arrays remain unchanged. Clearing a
+region removes the filmstrip and cancels its active drag. Existing source/date
+tabs synchronize with the filmstrip; multiple date tabs are visually replaced
+by the filmstrip once more than one observation is available.
+
+Controller tests cover chronological order, fast successive inputs, pointer
+dragging from a survey, no extra requests/camera refits, and region cleanup.
+Preview tests use synthetic values and a genuine SPHEREx fixture. Browser
+appearance and interaction have not been live verified in this session.
+
+## Earlier observation dates
+
+After the first observation loads, `Load 10 earlier dates` searches for up to
+ten distinct UTC dates before that displayed observation's UTC day. Survey
+tabs use the initial observation as the anchor. The action keeps the current
+image, requires the same SPHEREx detector band, and checks center coverage.
+Earlier dates appear as individual tabs without changing the selected crop.
+After a completed batch, the button becomes `Load 10 more dates` and searches
+before the oldest date in that batch. Requests can continue farther back;
+there is no eleven-image session limit. Existing frames remain resident and
+the filmstrip/playback includes all loaded dates. Adding dates pauses playback
+and preserves the displayed image.
+
+The new `mode=history` API uses SIA `TIME=-Inf <anchor-midnight-MJD>` and both
+QR3/DR1 collections. IRSA's TIME format is documented at
+https://irsa.ipac.caltech.edu/ibe/sia.html. Results are capped at 1,000 rows;
+the selector chooses the newest distinct dates within those returned rows,
+not a proven global latest-ten result. The UI reports a capped search.
+
+Downloads are serial. A failed date does not discard other loaded dates; retry
+skips successful downloads and retains that batch's original search anchor.
+The cursor advances only after the batch completes. A complete, uncapped result
+with fewer than ten dates marks the earlier-date search exhausted and disables
+the button; capped results are not treated as proof of exhaustion. Clearing the
+region aborts the client operation and removes its layers/blob URLs.
+Same detector band does not guarantee identical per-pixel wavelengths.
+
+Backend and browser-controller tests cover the new flow, including UTC bounds,
+same-band selection, capped results, two-digit tab indices, partial failures,
+multiple successive batches, retry cursor preservation, and cancellation.
+This flow has not been live archive/browser verified.
+
 ## Grey observation display investigation
 
 The placement error is now reproduced and corrected in the native dependency.

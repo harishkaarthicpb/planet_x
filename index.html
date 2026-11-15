@@ -66,7 +66,22 @@
       <button type="button" data-mission="spherex" aria-pressed="true" disabled>SPHEREx</button>
       <button type="button" data-mission="gaia" aria-pressed="false" title="Gaia DR3" disabled>Gaia</button>
       <button type="button" data-mission="observation-0" aria-pressed="false" disabled>Observation</button>
+      <button id="load-history" type="button" hidden>Load 10 earlier dates</button>
     </div>
+    <section id="observation-filmstrip" aria-label="Observation filmstrip" hidden>
+      <div class="filmstrip-heading">
+        <label for="observation-scrubber">Observation timeline</label>
+        <output id="filmstrip-date" for="observation-scrubber" aria-live="off"></output>
+        <button id="filmstrip-play" type="button" aria-label="Play observations" aria-pressed="false" disabled>▶ Play</button>
+      </div>
+      <div id="filmstrip-window" class="filmstrip-window" aria-hidden="true">
+        <div id="filmstrip-track"></div>
+        <span class="filmstrip-playhead"></span>
+      </div>
+      <input id="observation-scrubber" type="range" min="0" max="0" step="1" value="0"
+        aria-describedby="filmstrip-help" disabled>
+      <small id="filmstrip-help">Load earlier dates to scrub through observations.</small>
+    </section>
     <div id="cursor-coordinates" aria-label="Cursor coordinates in equatorial ICRS" aria-live="off"
       title="Sky coordinates under your cursor, in ICRS degrees">RA — · Dec — · ICRS</div>
     <a id="survey-credit" href="https://irsa.ipac.caltech.edu/Missions/spherex.html"

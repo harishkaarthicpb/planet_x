@@ -1,4 +1,5 @@
 import { regionFromRectangle, angularSeparationDegrees } from './sky-region.mjs';
+import { sampleFitsPreview } from './fits-preview.mjs';
 
 // Pinned Aladin 3.8.2 with its SIP polynomial evaluator corrected locally.
 // See vendor/README.md for the reproduction and dependency patch.
@@ -36,6 +37,21 @@ function diagnosticUrl(value) {
 const CHANNEL_INDEX = 62; // Fixed wavelength channel, not an observation date.
 const status = document.getElementById('status');
 const missionButtons = [...document.querySelectorAll('[data-mission]')];
+const missionSwitch = document.getElementById('mission-switch');
+const historyButton = document.getElementById('load-history');
+const filmstrip = document.getElementById('observation-filmstrip');
+const filmstripTrack = document.getElementById('filmstrip-track');
+const filmstripWindow = document.getElementById('filmstrip-window');
+const observationScrubber = document.getElementById('observation-scrubber');
+const filmstripDate = document.getElementById('filmstrip-date');
+const filmstripHelp = document.getElementById('filmstrip-help');
+const filmstripPlay = document.getElementById('filmstrip-play');
+let filmstripSignature = '';
+let filmstripTiles = [];
+let scrubbedObservationId = null;
+let filmstripDrag = null;
+let playback = null;
+const PLAYBACK_FRAME_MS = 250;
 const surveyCredit = document.getElementById('survey-credit');
 const coordinateForm = document.getElementById('coordinate-search');
 const coordinateFields = document.getElementById('coordinate-fields');
@@ -164,14 +180,177 @@ function applyLayer(id, properties, viewer = skyMap, layer = null) {
   });
 }
 
-function isObservation(id) { return /^observation-[01]$/.test(id || ''); }
+function isObservation(id) { return /^observation-\d+$/.test(id || ''); }
+const observationIndex = id => Number(id.slice('observation-'.length));
+
+function observationTimeline() {
+  return (selectedPair?.observations || []).map((exposure,index)=>({exposure,id:`observation-${index}`}))
+    .filter(entry=>pairState?.frames.has(entry.id))
+    .sort((a,b)=>Date.parse(a.exposure.observedStart)-Date.parse(b.exposure.observedStart));
+}
+
+function updatePlaybackControls() {
+  filmstripPlay.disabled=!comparisonActive || !pairState?.ready || switching || observationTimeline().length<2;
+  filmstripPlay.textContent=playback?'Ⅱ Pause':'▶ Play';
+  filmstrip.classList.toggle('playing',!!playback);
+  filmstripPlay.setAttribute('aria-label',playback?'Pause observations':'Play observations');
+  filmstripPlay.setAttribute('aria-pressed',String(!!playback));
+}
+
+function stopPlayback() {
+  const previous=playback;playback=null;
+  if(previous?.frame!=null)cancelAnimationFrame(previous.frame);
+  updatePlaybackControls();
+}
+
+function playbackFrame(now) {
+  const run=playback;
+  if(!run)return;
+  run.frame=null;
+  if(document.hidden || pairState!==run.state || !comparisonActive || switching || !pairState?.ready){stopPlayback();return;}
+  if(now>=run.nextAt){
+    // Advance once after a slow/background frame rather than racing through
+    // missed images. Every displayed frame is a real resident observation.
+    run.nextAt=now+PLAYBACK_FRAME_MS;
+    const index=run.ids.indexOf(currentMission),id=run.ids[(index+1)%run.ids.length];
+    void switchMission(id,{fromPlayback:true}).catch(error=>{
+      if(playback===run){stopPlayback();showError(error);}
+    });
+  }
+  if(playback===run)run.frame=requestAnimationFrame(playbackFrame);
+}
+
+function togglePlayback() {
+  if(playback){stopPlayback();return;}
+  const entries=observationTimeline();
+  if(!comparisonActive || !pairState?.ready || switching || entries.length<2 || document.hidden)return;
+  const ids=entries.map(entry=>entry.id),index=ids.indexOf(currentMission);
+  const run={state:pairState,ids,frame:null,nextAt:performance.now()+PLAYBACK_FRAME_MS};
+  playback=run;
+  // When parked on the newest photo, Play begins at the oldest date.
+  const first=index<0 || index===ids.length-1?ids[0]:ids[index];
+  void switchMission(first,{fromPlayback:true}).catch(error=>{
+    if(playback===run){stopPlayback();showError(error);}
+  });
+  updatePlaybackControls();
+  if(playback===run)run.frame=requestAnimationFrame(playbackFrame);
+}
+
+function updateFilmstrip() {
+  const entries=observationTimeline();
+  const visible=comparisonActive && !!pairState?.ready && entries.length>0;
+  if(playback && (!visible || switching || playback.ids.join(',')!==entries.map(entry=>entry.id).join(',')))stopPlayback();
+  updatePlaybackControls();
+  filmstrip.hidden=!visible;
+  document.body.classList.toggle('has-filmstrip',visible);
+  document.body.classList.toggle('has-multiple-observations',visible && entries.length>1);
+  if(!visible){
+    if(filmstripDrag && filmstripWindow.hasPointerCapture(filmstripDrag.pointer))filmstripWindow.releasePointerCapture(filmstripDrag.pointer);
+    filmstripDrag=null;filmstripWindow.classList.remove('dragging');
+    filmstripTrack.replaceChildren();filmstripTiles=[];filmstripSignature='';return;
+  }
+  const signature=`${pairState.sequence}:${entries.map(entry=>entry.id).join(',')}`;
+  if(signature!==filmstripSignature){
+    filmstripTrack.replaceChildren();filmstripTiles=[];
+    for(const {exposure,id} of entries){
+      const tile=document.createElement('div');tile.classList.add('filmstrip-tile');
+      const preview=pairState.frames.get(id).thumbnail;
+      if(preview){const image=document.createElement('img');image.src=preview;image.alt='';tile.append(image);}
+      const caption=document.createElement('span');caption.textContent=exposure.observedStart.slice(0,10);
+      tile.append(caption);filmstripTrack.append(tile);filmstripTiles.push(tile);
+    }
+    filmstripSignature=signature;
+  }
+  const selected=isObservation(currentMission)?currentMission:scrubbedObservationId;
+  let index=entries.findIndex(entry=>entry.id===selected);
+  if(index<0)index=entries.length-1;
+  observationScrubber.max=String(entries.length-1);
+  observationScrubber.value=String(index);
+  observationScrubber.disabled=switching || entries.length<2;
+  const date=entries[index].exposure.observedStart.replace('T',' ').replace('Z',' UTC');
+  observationScrubber.setAttribute('aria-valuetext',`${date}, image ${index+1} of ${entries.length}`);
+  filmstripDate.textContent=isObservation(currentMission)?`${date} · ${index+1}/${entries.length}`:'Drag below to view dated observations';
+  filmstripHelp.textContent=entries.length<2?'Load earlier dates to scrub through observations.':'Drag the strip or slider · oldest → newest · UTC dates';
+  filmstripTrack.style.transform=`translateX(-${index*68+32}px)`;
+  filmstripTiles.forEach((tile,i)=>tile.classList.toggle('selected',i===index && isObservation(currentMission)));
+}
+
+function scrubObservation() {
+  stopPlayback();
+  if(observationScrubber.disabled || !comparisonActive)return;
+  const entries=observationTimeline(),index=Math.round(Number(observationScrubber.value));
+  if(!Number.isFinite(index) || !entries[index])return;
+  if(currentMission===entries[index].id)return;
+  void switchMission(entries[index].id).catch(showError);
+}
+
+filmstripWindow.addEventListener('pointerdown',event=>{
+  if(observationScrubber.disabled || event.button!==0)return;
+  stopPlayback();
+  event.preventDefault();
+  filmstripDrag={pointer:event.pointerId,x:event.clientX,index:Number(observationScrubber.value)};
+  filmstripWindow.setPointerCapture(event.pointerId);
+  filmstripWindow.classList.add('dragging');
+});
+filmstripWindow.addEventListener('pointermove',event=>{
+  if(!filmstripDrag || filmstripDrag.pointer!==event.pointerId)return;
+  const index=filmstripDrag.index+Math.round((filmstripDrag.x-event.clientX)/68);
+  observationScrubber.value=String(Math.max(0,Math.min(Number(observationScrubber.max),index)));
+  scrubObservation();
+});
+function finishFilmstripDrag(event){
+  if(!filmstripDrag || filmstripDrag.pointer!==event.pointerId)return;
+  const drag=filmstripDrag;filmstripDrag=null;
+  filmstripWindow.classList.remove('dragging');
+  if(filmstripWindow.hasPointerCapture(event.pointerId))filmstripWindow.releasePointerCapture(event.pointerId);
+  if(event.type==='pointerup' && Math.abs(event.clientX-drag.x)<4){
+    const bounds=filmstripWindow.getBoundingClientRect();
+    const index=drag.index+Math.round((event.clientX-bounds.left-bounds.width/2)/68);
+    observationScrubber.value=String(Math.max(0,Math.min(Number(observationScrubber.max),index)));
+    scrubObservation();
+  }
+}
+filmstripWindow.addEventListener('pointerup',finishFilmstripDrag);
+filmstripWindow.addEventListener('pointercancel',finishFilmstripDrag);
+filmstripWindow.addEventListener('lostpointercapture',()=>{filmstripDrag=null;filmstripWindow.classList.remove('dragging');});
+
+function attachObservationPreview(state,id,bytes) {
+  const frame=state.frames.get(id);
+  if(!frame)return;
+  try{
+    const {width,height,pixels}=sampleFitsPreview(bytes,frame.image.getCuts());
+    const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
+    const context=canvas.getContext('2d');
+    const image=context.createImageData(width,height);image.data.set(pixels);context.putImageData(image,0,0);
+    frame.thumbnail=canvas.toDataURL('image/png');
+  }catch(error){observationLog('Observation preview','unavailable',{id,message:error.message});}
+}
+
+function syncObservationButtons() {
+  const count=Math.max(1,selectedPair?.observations.length || 0);
+  for (let i=missionButtons.length-1;i>=0;i--) {
+    const button=missionButtons[i];
+    if (isObservation(button.dataset.mission) && observationIndex(button.dataset.mission)>=count) {
+      button.remove();missionButtons.splice(i,1);
+    }
+  }
+  for (let index=0;index<count;index++) {
+    const id=`observation-${index}`;
+    if (missionButtons.some(button=>button.dataset.mission===id)) continue;
+    const button=document.createElement('button');
+    button.type='button';button.dataset.mission=id;
+    button.addEventListener('click',()=>switchMission(id).catch(showError));
+    missionSwitch.insertBefore(button,historyButton);missionButtons.push(button);
+  }
+}
 
 function updateMissionControls() {
+  syncObservationButtons();
   missionButtons.forEach(button => {
     const id = button.dataset.mission;
     const dated = isObservation(id);
-    const index = dated ? Number(id.at(-1)) : -1;
-    button.disabled = switching || currentMission === null || (dated && !pairState?.ready);
+    const index = dated ? observationIndex(id) : -1;
+    button.disabled = switching || currentMission === null || (dated && (!pairState?.ready || !pairState.frames.has(id)));
     button.setAttribute('aria-pressed', String(id === currentMission));
     if (dated) {
       const exposure = selectedPair?.observations[index];
@@ -179,12 +358,17 @@ function updateMissionControls() {
       button.title = exposure ? `Observed ${exposure.observedStart}; coverage: ${exposure.coverage || 'not measured'}` : 'Draw a rectangle to load one available observation.';
     }
   });
+  historyButton.hidden = !pairState?.ready;
+  historyButton.disabled = switching || !!pairState?.pending || !!pairState?.historyPending || !!pairState?.historyExhausted;
+  historyButton.textContent = pairState?.historyPending ? 'Loading earlier dates…' : pairState?.historyExhausted ? 'No earlier dates remaining' :
+    pairState?.historyRetry ? 'Retry earlier dates' : (selectedPair?.observations.length || 0)>1 ? 'Load 10 more dates' : 'Load 10 earlier dates';
+  updateFilmstrip();
   updateRegionControls();
 }
 
 function updateSourceDescription() {
   if (isObservation(currentMission)) {
-    const exposure = selectedPair.observations[Number(currentMission.at(-1))];
+    const exposure = selectedPair.observations[observationIndex(currentMission)];
     surveyCredit.textContent = `SPHEREx · ${exposure.observedStart.replace('T', ' ').replace('Z', ' UTC')} · NASA/Caltech/IPAC`;
     surveyCredit.href = exposure.downloadUrl;
     surveyCredit.title = 'One dated exposure, cropped to the selected region. Black areas have no image coverage. Wavelengths vary across the exposure.';
@@ -196,20 +380,24 @@ function updateSourceDescription() {
   }
 }
 
-async function switchMission(id) {
+async function switchMission(id, {fromPlayback=false}={}) {
+  if(!fromPlayback)stopPlayback();
   if (switching || !skyMap) return false;
   if (isObservation(id)) {
     if (!pairState?.ready || !pairState.frames.has(id)) return false;
-    await enterComparison();
-    if (!pairState?.ready || !selectedRegion) return false;
-    await fitComparisonRegion();
-    if (!pairState?.ready || !comparisonActive) return false;
+    const state=pairState,region=selectedRegion;
+    // Resident frames already share the locked camera/crop. Scrubbing changes
+    // visibility synchronously; only re-entering the region needs a fresh fit.
+    if(!comparisonActive)await enterComparison();
+    else if(!regionMapElement.style.getPropertyValue('--region-clip'))await fitComparisonRegion();
+    if (pairState!==state || selectedRegion!==region || !state.ready || !comparisonActive) return false;
     regionSurvey?.image?.setOpacity(0);
     pairState.frames.forEach((frame, key) => frame.image.setOpacity(key === id ? 1 : 0));
     currentMission = id;
-    await verifyImageDisplay(id);
+    scrubbedObservationId = id;
     updateSourceDescription();
     updateMissionControls();
+    await verifyImageDisplay(id);
     return true;
   }
   if (!MISSIONS[id]) return false;
@@ -297,7 +485,7 @@ async function verifyImageDisplay(id) {
   const [width,height]=comparisonMap.getSize();
   // Standalone FITS readPixel is unimplemented in Aladin 3.8.2. Its null
   // results cannot tell us whether the image is visible or has coverage.
-  observationLog('Aladin image display','frame',{requestId:selectedPair.requestId,id,registered,opacity,
+  observationLog('Aladin image display','frame',{requestId:frame.requestId || selectedPair.requestId,id,registered,opacity,
     size:[width,height],elapsedMs:Math.round(performance.now()-start),
     viewCenter:comparisonMap.getRaDec(),viewFov:comparisonMap.getFov(),
     imageCenter:[frame.image.ra,frame.image.dec],imageFov:frame.image.fov,
@@ -306,6 +494,7 @@ async function verifyImageDisplay(id) {
 }
 
 function leaveComparison() {
+  stopPlayback();
   const wasActive = comparisonActive;
   comparisonActive = false;
   regionView.hidden = true;
@@ -314,6 +503,7 @@ function leaveComparison() {
   if (wasActive || isObservation(currentMission)) currentMission = baseMission;
   coordinateFields.disabled = !skyMap;
   backToSkyButton.hidden = true;
+  updateFilmstrip();
   clearCursorCoordinates();
 }
 
@@ -414,9 +604,11 @@ async function fitComparisonRegion() {
 }
 
 function discardPreparedObservations() {
+  stopPlayback();
   const state = pairState;
   pairState = null;
   selectedPair = null;
+  scrubbedObservationId = null;
   if (state) {
     state.controller.abort();
     state.frames.forEach(frame => comparisonMap.removeImageLayer(frame.layer));
@@ -429,9 +621,11 @@ function discardPreparedObservations() {
 
 function prepareResidentImage(state,id,exposure,blobUrl) {
   const start=performance.now();
-  observationLog('Browser FITS decoding','start',{requestId:state.requestId,id,url:diagnosticUrl(blobUrl),date:exposure.observedStart});
+  const requestId=exposure.requestId || state.requestId;
+  observationLog('Browser FITS decoding','start',{requestId,id,url:diagnosticUrl(blobUrl),date:exposure.observedStart});
   return new Promise((resolve,reject)=>{
-    const layer=`planetx-pair-${state.sequence}-${id}`;
+    state.frameSequence=(state.frameSequence || 0)+1;
+    const layer=`planetx-pair-${state.sequence}-${id}-${state.frameSequence}`;
     let settled=false,phase='Browser FITS decoding',image;
     const timer=setTimeout(()=>fail(new Error(`${phase} timed out after 90 seconds for ${exposure.observedStart}.`)),90000);
     const cancel=()=>fail(new Error('Observation loading cancelled.'));
@@ -439,7 +633,7 @@ function prepareResidentImage(state,id,exposure,blobUrl) {
     const fail=error=>{
       if (settled) return;
       settled=true;cleanup();
-      observationLog(phase,'error',{requestId:state.requestId,id,elapsedMs:Math.round(performance.now()-start),exception:{name:error?.name,message:error?.message || String(error)}});
+      observationLog(phase,'error',{requestId,id,elapsedMs:Math.round(performance.now()-start),exception:{name:error?.name,message:error?.message || String(error)}});
       reject(error);
     };
     state.controller.signal.addEventListener('abort',cancel,{once:true});
@@ -458,25 +652,25 @@ function prepareResidentImage(state,id,exposure,blobUrl) {
           const expected = [state.region.position.ra,state.region.position.dec];
           const separation = angularSeparationDegrees(expected,[ra,dec]);
           const maximum = 2 * Math.max(state.region.sizeDegrees,Number.isFinite(fov) ? Math.abs(fov) : 0);
-          observationLog('FITS sky placement','check',{requestId:state.requestId,id,
+          observationLog('FITS sky placement','check',{requestId,id,
             expectedCenter:expected,imageCenter:[ra,dec],separationDegrees:separation,maximumDegrees:maximum});
           if (![ra,dec,fov,separation].every(Number.isFinite) || Math.abs(dec)>90 || fov<=0 || separation>maximum) {
             fail(new Error(`FITS coordinate mismatch: decoded image center RA ${ra}, Dec ${dec} is ${separation.toFixed(3)}° from the selected region. The observation cannot be displayed at these coordinates.`));
             return;
           }
-          image.setOpacity(comparisonActive ? 1 : 0);
-          observationLog(phase,'complete',{requestId:state.requestId,id,elapsedMs:Math.round(performance.now()-start),imageCenter:[ra,dec],imageFov:fov,cuts:image.getCuts()});
+          image.setOpacity(0);
+          observationLog(phase,'complete',{requestId,id,elapsedMs:Math.round(performance.now()-start),imageCenter:[ra,dec],imageFov:fov,cuts:image.getCuts()});
           phase='Aladin image registration';
           const waitForRegistration=()=>{
             if (settled || pairState!==state || state.controller.signal.aborted) { comparisonMap.removeImageLayer(layer);fail(new Error('Observation loading cancelled.'));return; }
             if (comparisonMap.getOverlayImageLayer(layer)!==image) { setTimeout(waitForRegistration,16);return; }
             settled=true;cleanup();
-            observationLog(phase,'complete',{requestId:state.requestId,id,elapsedMs:Math.round(performance.now()-start),layer});resolve();
+            observationLog(phase,'complete',{requestId,id,elapsedMs:Math.round(performance.now()-start),layer});resolve();
           };
           setTimeout(waitForRegistration,0);
         },errorCallback:fail
       });
-      state.frames.set(id,{image,layer});comparisonMap.setOverlayImageLayer(image,layer);
+      state.frames.set(id,{image,layer,requestId});comparisonMap.setOverlayImageLayer(image,layer);
     } catch(error) { fail(error); }
   });
 }
@@ -486,7 +680,7 @@ function updateRegionControls() {
   drawRegionButton.textContent = drawingRegion ? 'Cancel drawing' : 'Draw rectangle';
   drawRegionButton.setAttribute('aria-pressed', String(drawingRegion));
   clearRegionButton.hidden = !selectedRegion;
-  loadObservationButton.disabled = !selectedRegion || drawingRegion || switching || !!pairState?.pending;
+  loadObservationButton.disabled = !selectedRegion || drawingRegion || switching || !!pairState?.pending || !!pairState?.historyPending;
   loadObservationButton.textContent = pairState?.pending ? 'Loading observation…' : 'Load one observation';
 }
 
@@ -591,6 +785,7 @@ async function loadSelectedObservations() {
       step=`Browser FITS decoding for ${date}`;
       preloadProgress.textContent=`Preparing observation · ${date}…`;
       await prepareResidentImage(state,`observation-${index}`,exposure,blobUrl);
+      attachObservationPreview(state,`observation-${index}`,bytes);
     }
     if (pairState !== state || state.controller.signal.aborted) return false;
     selectedPair = result;
@@ -632,7 +827,101 @@ async function readArchiveResponse(response, step) {
   return response.json();
 }
 
+async function loadEarlierObservations() {
+  const state=pairState, selection=selectedPair;
+  if (!selectedRegion || !state?.ready || state.pending || state.historyPending || state.historyExhausted || switching) return false;
+  const anchor=state.historyAnchor || selection.observations[isObservation(currentMission)?observationIndex(currentMission):0];
+  state.historyAnchor=anchor;
+  state.historyPending=true;
+  preloadProgress.hidden=false;
+  preloadProgress.textContent=`Finding up to 10 dates before ${anchor.observedStart.slice(0,10)} UTC · ${anchor.band}…`;
+  updateMissionControls();
+  try {
+    const query=new URLSearchParams({corners:JSON.stringify(state.region.corners),mode:'history',
+      before:anchor.observedStart,band:anchor.band,limit:'10'});
+    const response=await fetch(`/api/spherex/observations?${query}`,{
+      signal:AbortSignal.any([state.controller.signal,AbortSignal.timeout(105000)])});
+    const result=await readArchiveResponse(response,'Earlier-date search');
+    if (pairState!==state || state.controller.signal.aborted) return false;
+    if (!Array.isArray(result.observations) || result.observations.length>10 || result.observations.some(exposure=>
+      !exposure.cutoutUrl || !Number.isFinite(Date.parse(exposure.observedStart)) || exposure.band!==anchor.band ||
+      exposure.observedStart.slice(0,10)>=anchor.observedStart.slice(0,10))) {
+      throw new Error('The archive returned invalid earlier observations.');
+    }
+    const dates=new Set(selection.observations.map(exposure=>exposure.observedStart.slice(0,10)));
+    const candidates=result.observations.filter(exposure=>!dates.has(exposure.observedStart.slice(0,10)));
+    const failures=[];
+    for (const [offset,exposure] of candidates.entries()) {
+      if (pairState!==state || state.controller.signal.aborted) return false;
+      const date=exposure.observedStart.slice(0,10);
+      if (dates.has(date)) continue;
+      const id=`observation-${selection.observations.length}`,blobCount=state.blobUrls.length;
+      try {
+        preloadProgress.textContent=`Loading earlier date ${offset+1}/${candidates.length} · ${date} UTC…`;
+        observationLog('Earlier image download','start',{requestId:result.requestId,date,url:diagnosticUrl(exposure.cutoutUrl),originalUrl:exposure.downloadUrl});
+        const cutout=await fetch(exposure.cutoutUrl,{
+          signal:AbortSignal.any([state.controller.signal,AbortSignal.timeout(105000)])});
+        if (!cutout.ok) await readArchiveResponse(cutout,`Image download for ${date}`);
+        const bytes=await cutout.arrayBuffer();
+        observationLog('Earlier image download','complete',{requestId:result.requestId,date,status:cutout.status,byteSize:bytes.byteLength,
+          pixelSha256:cutout.headers.get('x-planetx-pixel-sha256')});
+        if (new TextDecoder().decode(new Uint8Array(bytes,0,Math.min(8,bytes.byteLength)))!=='SIMPLE  ') {
+          throw new Error(`The ${date} response is not a FITS image.`);
+        }
+        if (pairState!==state || state.controller.signal.aborted) return false;
+        const blobUrl=URL.createObjectURL(new Blob([bytes],{type:'application/fits'}));
+        state.blobUrls.push(blobUrl);
+        const dated={...exposure,requestId:result.requestId};
+        await prepareResidentImage(state,id,dated,blobUrl);
+        if (pairState!==state || state.controller.signal.aborted) return false;
+        attachObservationPreview(state,id,bytes);
+        selection.observations.push(dated);dates.add(date);
+        updateMissionControls();
+      } catch(error) {
+        const frame=state.frames.get(id);
+        if (frame) comparisonMap.removeImageLayer(frame.layer);
+        state.frames.delete(id);
+        state.blobUrls.splice(blobCount).forEach(url=>URL.revokeObjectURL(url));
+        if (pairState!==state || state.controller.signal.aborted) return false;
+        failures.push(date);
+        observationLog('Earlier observation','error',{requestId:result.requestId,date,message:error.message});
+      }
+    }
+    if (pairState!==state || state.controller.signal.aborted) return false;
+    state.historyRetry=failures.length>0;
+    if(!failures.length){
+      // Advance only after this batch is complete. A retry keeps its original
+      // anchor so a failed date is not skipped when looking farther back.
+      const oldest=result.observations.reduce((earliest,exposure)=>
+        Date.parse(exposure.observedStart)<Date.parse(earliest.observedStart)?exposure:earliest,anchor);
+      state.historyAnchor=oldest;
+      state.historyExhausted=!result.searchLimited && result.observations.length<10;
+    }
+    const count=selection.observations.length-1;
+    preloadProgress.textContent=`${count} earlier date${count===1?'':'s'} loaded · ${anchor.band} · before ${anchor.observedStart.slice(0,10)} UTC`+
+      (failures.length?` · ${failures.length} failed; use Retry earlier dates.`:'')+
+      (state.historyExhausted?' · No earlier dates remaining.':'')+
+      (result.searchLimited?' · Search capped; more dates may exist.':'');
+    return true;
+  } catch(error) {
+    if (pairState===state && !state.controller.signal.aborted) {
+      state.historyRetry=true;
+      preloadProgress.textContent=`Earlier dates unavailable: ${error.message}. The loaded observation is still available.`;
+      observationLog('Earlier-date search','error',{message:error.message});
+    }
+    return false;
+  } finally {
+    state.historyPending=false;
+    if (pairState===state) updateMissionControls();
+  }
+}
+
 drawRegionButton.addEventListener('click', startRegionSelection);
+historyButton.addEventListener('click', loadEarlierObservations);
+filmstripPlay.addEventListener('click',togglePlayback);
+observationScrubber.addEventListener('input',scrubObservation);
+observationScrubber.addEventListener('pointerdown',stopPlayback);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stopPlayback();});
 clearRegionButton.addEventListener('click', clearSelectedRegion);
 loadObservationButton.addEventListener('click', loadSelectedObservations);
 backToSkyButton.addEventListener('click', () => { leaveComparison(); updateSourceDescription(); updateMissionControls(); });
@@ -646,6 +935,7 @@ for (const name of ['pointerdown','mousedown','touchstart','wheel','dblclick','c
   }, {capture:true,passive:false});
 }
 window.addEventListener('keydown', event => {
+  if(event.target===observationScrubber)return;
   if (comparisonActive && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','-','=',' '].includes(event.key) && !(event.key === ' ' && event.target.tagName === 'BUTTON')) {
     event.preventDefault(); event.stopImmediatePropagation();
   }

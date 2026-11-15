@@ -231,33 +231,36 @@ test('cached genuine SPHEREx fixtures have distinct UTC dates and intact science
  }
 });
 
-test('single-image rectangle action accepts any band and the first returned date',async()=>{
+test('single-image rectangle action accepts any band and prefers the newest usable returned date',async()=>{
  const original=globalThis.fetch,calls=[];
- const first=row('first-available',61200);first[4]='SPHEREx-D2';first[6]='1.10e-6';first[7]='1.62e-6';
+ const first=row('newest-usable',61300);first[4]='SPHEREx-D2';first[6]='1.10e-6';first[7]='1.62e-6';
  globalThis.fetch=async(url)=>{
    const parsed=new URL(url);calls.push(parsed);
-   assert.equal(parsed.searchParams.get('COLLECTION'),'spherex_qr3');
-   assert.equal(parsed.searchParams.get('MAXREC'),'1');
+   assert.deepEqual(parsed.searchParams.getAll('COLLECTION'),['spherex_qr3','spherex_qr3_deep']);
+   assert.equal(parsed.searchParams.get('MAXREC'),'1000');
    assert.match(parsed.searchParams.get('POS'),/^CIRCLE /);
    assert.equal(parsed.searchParams.has('BAND'),false);
    assert.equal(parsed.searchParams.has('TIME'),false);
-   return {ok:true,status:200,json:async()=>payload([first,row('newer-but-not-needed',61300)])};
+   return {ok:true,status:200,json:async()=>payload([row('older-first-row',61200),
+     row('newest-but-off-center',61400,'POLYGON ICRS 20 20 21 20 21 21 20 21'),first])};
  };
  try{
    const result=response();const params=new URLSearchParams({corners:JSON.stringify(rectangle),mode:'single'});
    await handleObservationRequest({method:'GET',url:`/api/spherex/observations?${params}`},result);
    assert.equal(result.status,200);const data=JSON.parse(result.body);
-   assert.equal(data.observations.length,1);assert.equal(data.observations[0].id,'first-available');
-   assert.equal(data.observations[0].band,'SPHEREx-D2');assert.equal(data.selectionRule,'first-available-image');
+   assert.equal(data.observations.length,1);assert.equal(data.observations[0].id,'newest-usable');
+   assert.equal(data.observations[0].band,'SPHEREx-D2');assert.equal(data.selectionRule,'newest-usable-image-returned');
    assert.equal(calls.length,1);
  }finally{globalThis.fetch=original;}
 });
 
-test('single search tries DR1 only when QR3 has no matching image',async()=>{
+test('single search tries DR1 and its deep field only when QR3 has no matching image',async()=>{
  const original=globalThis.fetch,calls=[];
- const dr1=row('dr1-image',61200);dr1[1]='spherex_dr1';dr1[8]=dr1[8].replace('/qr3/','/dr1/');
+ const dr1=row('dr1-image',61200);dr1[1]='spherex_dr1_deep';dr1[8]=dr1[8].replace('/qr3/','/dr1/');
  globalThis.fetch=async(url)=>{
    calls.push(new URL(url).searchParams.get('COLLECTION'));
+   assert.deepEqual(new URL(url).searchParams.getAll('COLLECTION'),calls.length===1?
+     ['spherex_qr3','spherex_qr3_deep']:['spherex_dr1','spherex_dr1_deep']);
    return {ok:true,status:200,json:async()=>payload(calls.length===1?[]:[dr1])};
  };
  try{
@@ -294,7 +297,7 @@ test('history route searches both collections before UTC midnight and reports ca
  const original=globalThis.fetch,calls=[];
  globalThis.fetch=async url=>{
    const parsed=new URL(url);calls.push(parsed);
-   assert.deepEqual(parsed.searchParams.getAll('COLLECTION'),['spherex_qr3','spherex_dr1']);
+   assert.deepEqual(parsed.searchParams.getAll('COLLECTION'),['spherex_qr3','spherex_qr3_deep','spherex_dr1','spherex_dr1_deep']);
    assert.equal(parsed.searchParams.get('TIME'),'-Inf 61300');
    assert.equal(parsed.searchParams.get('MAXREC'),'1000');
    assert.match(parsed.searchParams.get('POS'),/^CIRCLE /);
@@ -311,6 +314,8 @@ test('history route searches both collections before UTC midnight and reports ca
    assert.equal(data.observations.length,10);assert.equal(data.observations[0].id,'usable-same-day');
    assert.ok(data.observations.every(o=>o.band==='SPHEREx-D4' && /^\/api\/spherex\/cutout\/[a-f0-9]{64}$/.test(o.cutoutUrl)));
    assert.equal(data.searchLimited,true);
+   assert.equal(data.searchSummary.matchingExposures,14);
+   assert.equal(data.searchSummary.matchingDates,13);
    assert.equal(data.selectionRule,'earlier-distinct-UTC-dates-from-returned-rows');
    assert.equal(calls.length,1,'Search does not download images');
  }finally{globalThis.fetch=original;}

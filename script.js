@@ -360,7 +360,7 @@ function updateMissionControls() {
   });
   historyButton.hidden = !pairState?.ready;
   historyButton.disabled = switching || !!pairState?.pending || !!pairState?.historyPending || !!pairState?.historyExhausted;
-  historyButton.textContent = pairState?.historyPending ? 'Loading earlier dates…' : pairState?.historyExhausted ? 'No earlier dates remaining' :
+  historyButton.textContent = pairState?.historyPending ? 'Loading earlier dates…' : pairState?.historyExhausted ? 'No earlier same-band dates' :
     pairState?.historyRetry ? 'Retry earlier dates' : (selectedPair?.observations.length || 0)>1 ? 'Load 10 more dates' : 'Load 10 earlier dates';
   updateFilmstrip();
   updateRegionControls();
@@ -751,7 +751,7 @@ async function loadSelectedObservations() {
   const state = { sequence: ++preloadSequence, region, controller: new AbortController(), frames: new Map(), blobUrls: [], pending:true, ready:false };
   pairState = state;
   preloadProgress.hidden = false;
-  preloadProgress.textContent = 'Finding one available SPHEREx image overlapping the rectangle…';
+  preloadProgress.textContent = 'Finding the newest usable SPHEREx image returned for this region…';
   updateMissionControls();
   let step = 'Observation search';
   try {
@@ -795,7 +795,8 @@ async function loadSelectedObservations() {
     step = 'Aladin image display';
     if (comparisonActive) await switchMission('observation-0');
     if (pairState !== state || state.controller.signal.aborted) return false;
-    preloadProgress.textContent = `Observation ready · ${result.observations[0].observedStart.slice(0,10)} UTC · ${result.observations[0].band} · ${result.observations[0].coverage==='full'?'full footprint coverage':'partial coverage possible'}`;
+    preloadProgress.textContent = `Observation ready · ${result.observations[0].observedStart.slice(0,10)} UTC · ${result.observations[0].band} · ${result.observations[0].coverage==='full'?'full footprint coverage':'partial coverage possible'}`+
+      (result.searchLimited?' · Search capped; newer images may exist.':'');
     return true;
   } catch (error) {
     state.ready = false;
@@ -899,8 +900,9 @@ async function loadEarlierObservations() {
     }
     const count=selection.observations.length-1;
     preloadProgress.textContent=`${count} earlier date${count===1?'':'s'} loaded · ${anchor.band} · before ${anchor.observedStart.slice(0,10)} UTC`+
+      (result.searchSummary?` · This search: ${result.searchSummary.matchingExposures} exposures across ${result.searchSummary.matchingDates} UTC dates.`:'')+
       (failures.length?` · ${failures.length} failed; use Retry earlier dates.`:'')+
-      (state.historyExhausted?' · No earlier dates remaining.':'')+
+      (state.historyExhausted?' · No earlier same-band dates remaining.':'')+
       (result.searchLimited?' · Search capped; more dates may exist.':'');
     return true;
   } catch(error) {

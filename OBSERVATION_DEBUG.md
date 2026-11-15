@@ -1,5 +1,21 @@
 # Current simplified rectangle flow
 
+## Discovery coverage
+
+Initial discovery now asks for up to 1,000 records and chooses the newest usable
+returned exposure covering the selected center. This replaces the arbitrary
+first-row/MAXREC=1 choice, which could start the earlier-date search too far
+back. QR3 wide/deep collections are searched first; DR1 wide/deep are the fallback
+when QR3 has no usable match. A capped response cannot prove global newestness.
+
+Earlier-date searches now include all four wide/deep collections. Per
+https://irsa.ipac.caltech.edu/spherex-archive-documentation/spherex-data-access/,
+the `_deep` collections contain additional spectral image coverage omitted by
+the earlier wide-only queries. History responses include counts of matching
+same-band exposures and distinct UTC dates within the returned rows. The UI
+shows those counts and explicitly describes one-image-per-day/same-band filters.
+These searches have not been live verified during this coverage investigation.
+
 ## Observation filmstrip
 
 Play/Pause loops resident observations at four frames per second. Starting from
@@ -46,7 +62,7 @@ the filmstrip/playback includes all loaded dates. Adding dates pauses playback
 and preserves the displayed image.
 
 The new `mode=history` API uses SIA `TIME=-Inf <anchor-midnight-MJD>` and both
-QR3/DR1 collections. IRSA's TIME format is documented at
+QR3/DR1 wide and deep collections. IRSA's TIME format is documented at
 https://irsa.ipac.caltech.edu/ibe/sia.html. Results are capped at 1,000 rows;
 the selector chooses the newest distinct dates within those returned rows,
 not a proven global latest-ten result. The UI reports a capped search.
@@ -112,28 +128,29 @@ opacity, not the actual rendered science pixels. Aladin 3.8.2's standalone FITS
 readPixel method is unimplemented, so diagnostics now record image/view centers,
 FoVs, cuts, and crop bounds instead of misleading null pixel probes.
 
-Five additional controller tests cover fit timing, cancellation, invalid
-projection, automatic cuts, and display failure cleanup. A local server launch
-was declined during this investigation, so browser rendering and the exact cause
-of the reported grey screen remain unverified.
+The original controller tests covered fit timing, cancellation, invalid
+projection, automatic cuts, and display failure cleanup. Those tests alone did
+not identify the grey-screen cause; the native SIP reproduction above later
+confirmed it. Browser rendering remains unverified.
 
 Drawing a rectangle now requests mode=single and loads just one available SPHEREx
 image. This is the default on the normal localhost URL; old observationTest URL
 flags do not select async searching in the current frontend.
 
-The search uses the rectangle center, one collection at a time, MAXREC=1 and no
-wavelength/date constraint or newest-first sorting. It verifies the returned
+The search uses the rectangle center, one release group at a time, MAXREC=1000
+and no wavelength/date constraint. It sorts returned rows by newest observation
+time and verifies that the returned
 footprint contains that center, so the image overlaps the selected rectangle.
-QR3 is queried first; DR1 is checked only if QR3 returns no usable match. A failed
+QR3 wide/deep is queried first; DR1 wide/deep is checked only if QR3 returns no usable match. A failed
 HTTP request is not retried against another collection. The original search budget
 is shared across the possible two requests. One FITS file is downloaded, with its
 science IMAGE extension displayed at its original celestial coordinates. Coverage
 of the entire rectangle is not guaranteed.
 
-A captured independent QR3 point search at the retained fixture target returned
-19 real matching D4 images in 0.946 seconds. The new MAXREC=1, any-band request was
-not live-tested because permission was declined. Twenty-five backend tests and
-mocked viewer checks pass; these are not a real-browser rendering verification.
+A previously captured independent QR3 point search at the retained fixture target
+returned 19 real matching D4 images in 0.946 seconds. That historical result does
+not verify the latest discovery changes or establish coverage at other targets.
+Backend and mocked viewer checks are not real-browser rendering verification.
 Legacy pair and async backend helpers remain available for later work but are not
 called by the simplified rectangle action.
 

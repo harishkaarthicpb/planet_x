@@ -181,6 +181,7 @@ html, body {
 }
 #region-panel #draw-region[aria-pressed="true"] { color: #ffe66d; border-color: #ffe66d; }
 #region-result, .region-note { font-size: 11px; color: #b5c8df; margin: 10px 0; }
+#data-freshness { font-size: 11px; color: #b5c8df; margin: 10px 0; }
 #mission-switch { max-width: calc(100% - 40px); }
 #mission-switch button { padding-inline: 9px; }
 

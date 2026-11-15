@@ -8,14 +8,13 @@ const ARCHIVE = 'https://irsa.ipac.caltech.edu';
 const WAVELENGTH_METERS = 3.293e-6;
 const MAX_RECORDS = 200; // We need two dates, not an exhaustive latest-date search.
 const DISCOVERY_MAX_RECORDS = 1000;
-const COLLECTIONS = ['spherex_qr3','spherex_qr3_deep','spherex_dr1','spherex_dr1_deep'];
 const cutouts = new Map();
 
 function validImageUrl(value) {
   try {
     const url = new URL(value);
-    return url.origin === ARCHIVE && !url.search && !url.hash &&
-      /^\/ibe\/data\/spherex\/(dr1|qr3)\/level2\/.+\.fits$/.test(url.pathname);
+    return url.origin === ARCHIVE && !url.username && !url.password && !url.search && !url.hash &&
+      /^\/ibe\/data\/spherex\/(dr[1-9]\d*|qr[1-9]\d*)\/level2\/.+\.fits$/.test(url.pathname);
   } catch { return false; }
 }
 
@@ -97,7 +96,7 @@ function tapRows(payload) {
     return {
       obs_id:url.split('/').pop()?.replace(/\.fits$/,''), access_url:url,
       t_min:row.time_bounds_lower,t_max:null,
-      obs_collection:url.includes('/qr3/')?'spherex_qr3':'spherex_dr1',
+      obs_collection:`spherex_${url.match(/\/spherex\/((?:dr|qr)\d+)\//)?.[1] || 'unknown'}`,
       energy_bandpassname:'SPHEREx-D4',dataproduct_type:'image',
       em_min:2.42e-6,em_max:3.82e-6
     };
@@ -138,52 +137,61 @@ function selectEarlierDates(payload, options, accepts=()=>true) {
   }).slice(0,limit);
 }
 
+function selectNewerDates(payload, {after,...options}, accepts=()=>true) {
+  const {beforeDate:afterDate,band,limit}=historyOptions({...options,before:after});
+  const seen=new Set();
+  return exposureRows(payload,{anyBand:true}).sort((a,b)=>number(a.t_min)-number(b.t_min)).filter(row=>{
+    const date=utcDateFromMjd(row.t_min);
+    if(row.energy_bandpassname!==band || date<=afterDate || seen.has(date) || !accepts(row))return false;
+    seen.add(date);return true;
+  }).slice(0,limit);
+}
+
 async function searchObservations(region, {mode='rectangle',requestId=randomUUID(),log=logTrace,...options}={}) {
   const started=performance.now();
   let selected, recordCount, searchLimited, searchSummary;
-  if (mode==='history') {
-    const history=historyOptions(options);
+  if (mode==='history' || mode==='newer') {
+    const newer=mode==='newer';
+    const history=historyOptions(newer?{...options,before:options.after}:options);
     const {ra,dec}=region.position;
     const query=new URL('/SIA',ARCHIVE);
-    for (const collection of COLLECTIONS) query.searchParams.append('COLLECTION',collection);
+    // Query the instrument, not fixed release names: new searchable DR/QR
+    // collections (including deep fields) participate without a code update.
+    query.searchParams.set('INSTRUMENT','SPHEREx');
     query.searchParams.set('POS',`CIRCLE ${ra} ${dec} 0.0001`);
-    query.searchParams.set('TIME',`-Inf ${history.beforeMjd}`);
+    query.searchParams.set('TIME',newer?`${history.beforeMjd+1} +Inf`:`-Inf ${history.beforeMjd}`);
     query.searchParams.set('DPTYPE','image');
     query.searchParams.set('RESPONSEFORMAT','JSON');query.searchParams.set('MAXREC',String(DISCOVERY_MAX_RECORDS));
-    const payload=await archiveRequest(query,90000,'IRSA earlier-date search',r=>r.json(),{requestId,log});
+    const payload=await archiveRequest(query,90000,newer?'IRSA newer-date search':'IRSA earlier-date search',r=>r.json(),{requestId,log});
     const {footprintContainsRegion}=await import('./sky-region.mjs');
-    selected=selectEarlierDates(payload,{before:history.beforeDate,band:history.band,limit:history.limit},
-      row=>footprintContainsRegion(row.s_region,[[ra,dec]]));
+    const accepts=row=>footprintContainsRegion(row.s_region,[[ra,dec]]);
+    selected=newer?selectNewerDates(payload,{after:history.beforeDate,band:history.band,limit:history.limit},accepts):
+      selectEarlierDates(payload,{before:history.beforeDate,band:history.band,limit:history.limit},accepts);
     const matching=exposureRows(payload,{anyBand:true}).filter(row=>row.energy_bandpassname===history.band &&
-      utcDateFromMjd(row.t_min)<history.beforeDate && footprintContainsRegion(row.s_region,[[ra,dec]]));
+      (newer?utcDateFromMjd(row.t_min)>history.beforeDate:utcDateFromMjd(row.t_min)<history.beforeDate) && accepts(row));
     searchSummary={matchingExposures:matching.length,matchingDates:new Set(matching.map(row=>utcDateFromMjd(row.t_min))).size,
-      collections:COLLECTIONS};
+      collections:[...new Set(matching.map(row=>row.obs_collection))],instrument:'SPHEREx'};
     const resources=payload?.VOTABLE?.RESOURCE_ARRAY;
     const resource=resources?.find(item=>item.TABLE);
     recordCount=(resource.TABLE.DATA?.TABLEDATA || []).length;
     searchLimited=resources.some(r=>r.INFO_ARRAY?.some(i=>i['<xmlattr>']?.value==='OVERFLOW')) || recordCount>=DISCOVERY_MAX_RECORDS;
   } else if (mode==='single') {
-    // Prefer the newest usable returned QR3 exposure so the earlier-date search
-    // does not start from an arbitrary old record. Include deep fields. An
-    // overflowing SIA response cannot establish the globally newest exposure.
-    recordCount=0;searchLimited=false;
-    const deadline=performance.now()+90000;
+    // Discover all currently searchable releases. A bounded SIA response can
+    // establish only the newest usable returned exposure, not global newestness.
     const {ra,dec}=region.position;
     const {footprintContainsRegion}=await import('./sky-region.mjs');
-    for (const collections of [['spherex_qr3','spherex_qr3_deep'],['spherex_dr1','spherex_dr1_deep']]) {
-      const query=new URL('/SIA',ARCHIVE);
-      for (const collection of collections) query.searchParams.append('COLLECTION',collection);
-      query.searchParams.set('POS',`CIRCLE ${ra} ${dec} 0.0001`);
-      query.searchParams.set('DPTYPE','image');
-      query.searchParams.set('RESPONSEFORMAT','JSON');query.searchParams.set('MAXREC',String(DISCOVERY_MAX_RECORDS));
-      const payload=await archiveRequest(query,Math.max(1,Math.ceil(deadline-performance.now())),'IRSA single-image search',r=>r.json(),{requestId,log});
-      const resource=payload.VOTABLE?.RESOURCE_ARRAY?.find(r=>r.TABLE);
-      recordCount+=resource?.TABLE.DATA?.TABLEDATA?.length || 0;
-      searchLimited ||= resource?.INFO_ARRAY?.some(i=>i['<xmlattr>']?.value==='OVERFLOW') ||
-        (resource?.TABLE.DATA?.TABLEDATA?.length || 0)>=DISCOVERY_MAX_RECORDS;
-      const first=exposureRows(payload,{anyBand:true}).find(row=>footprintContainsRegion(row.s_region,[[ra,dec]]));
-      if (first) {selected=[first];break;}
-    }
+    const query=new URL('/SIA',ARCHIVE);
+    query.searchParams.set('INSTRUMENT','SPHEREx');
+    query.searchParams.set('POS',`CIRCLE ${ra} ${dec} 0.0001`);
+    query.searchParams.set('DPTYPE','image');
+    query.searchParams.set('RESPONSEFORMAT','JSON');query.searchParams.set('MAXREC',String(DISCOVERY_MAX_RECORDS));
+    const payload=await archiveRequest(query,90000,'IRSA single-image search',r=>r.json(),{requestId,log});
+    const resource=payload.VOTABLE?.RESOURCE_ARRAY?.find(r=>r.TABLE);
+    recordCount=resource?.TABLE.DATA?.TABLEDATA?.length || 0;
+    searchLimited = resource?.INFO_ARRAY?.some(i=>i['<xmlattr>']?.value==='OVERFLOW') ||
+      (resource?.TABLE.DATA?.TABLEDATA?.length || 0)>=DISCOVERY_MAX_RECORDS;
+    const first=exposureRows(payload,{anyBand:true}).find(row=>footprintContainsRegion(row.s_region,[[ra,dec]]));
+    if (first) selected=[first];
     if (!selected) throw new Error('No SPHEREx FITS image overlapping this rectangle was returned.');
   } else if (mode==='point') {
     const payload=await runAsyncTap(buildTapQuery(region),{maxWaitMs:150000,requestId,log});
@@ -192,7 +200,7 @@ async function searchObservations(region, {mode='rectangle',requestId=randomUUID
     searchLimited=recordCount>=MAX_RECORDS;
   } else {
     const query = new URL('/SIA', ARCHIVE);
-    for (const collection of ['spherex_dr1','spherex_qr3','spherex_dr1_deep','spherex_qr3_deep']) query.searchParams.append('COLLECTION',collection);
+    query.searchParams.set('INSTRUMENT','SPHEREx');
     query.searchParams.set('POS',`POLYGON ${region.corners.flat().join(' ')}`);
     query.searchParams.set('BAND',String(WAVELENGTH_METERS));
     query.searchParams.set('RESPONSEFORMAT','JSON');query.searchParams.set('MAXREC',String(MAX_RECORDS));
@@ -271,13 +279,14 @@ async function handleObservationRequest(request, response) {
         return true;
       }
       const mode=url.searchParams.get('mode') || 'rectangle';
-      if (!['single','rectangle','point','history'].includes(mode)) { sendJson(response,400,{error:'Unknown observation search mode.'}); return true; }
+      if (!['single','rectangle','point','history','newer'].includes(mode)) { sendJson(response,400,{error:'Unknown observation search mode.'}); return true; }
       let history={};
-      if (mode==='history') {
-        try { history=historyOptions({before:url.searchParams.get('before'),band:url.searchParams.get('band'),limit:url.searchParams.get('limit')??10}); }
+      if (mode==='history' || mode==='newer') {
+        try { history=historyOptions({before:url.searchParams.get(mode==='newer'?'after':'before'),band:url.searchParams.get('band'),limit:url.searchParams.get('limit')??10}); }
         catch(error) {sendJson(response,400,{error:error.message});return true;}
       }
-      const result=await searchObservations(region,{mode,requestId,...(mode==='history'?{before:history.beforeDate,band:history.band,limit:history.limit}:{})});
+      const result=await searchObservations(region,{mode,requestId,...(['history','newer'].includes(mode)?
+        {[mode==='newer'?'after':'before']:history.beforeDate,band:history.band,limit:history.limit}:{})});
       const size=mode==='point'?0.05:region.sizeDegrees;
       const observations=result.selected.map((row,index)=>{
         const url=cutoutUrl(row,region,size);
@@ -288,8 +297,8 @@ async function handleObservationRequest(request, response) {
       while (cutouts.size>64) cutouts.delete(cutouts.keys().next().value);
       sendJson(response,200,{...region,observations,requestId,recordCount:result.recordCount,
         searchLimited:result.searchLimited,mode,cutoutSizeDegrees:size,
-        selectionRule:mode==='single'?'newest-usable-image-returned':mode==='history'?'earlier-distinct-UTC-dates-from-returned-rows':'newest-two-UTC-dates-returned',
-        ...(mode==='history'?{before:history.beforeDate,band:history.band,limit:history.limit,searchSummary:result.searchSummary}:{}),coverage:mode==='point'?'center-test':'partial-allowed'});
+        selectionRule:mode==='single'?'newest-usable-image-returned':mode==='history'?'earlier-distinct-UTC-dates-from-returned-rows':mode==='newer'?'newer-distinct-UTC-dates-from-returned-rows':'newest-two-UTC-dates-returned',
+        ...(['history','newer'].includes(mode)?{[mode==='newer'?'after':'before']:history.beforeDate,band:history.band,limit:history.limit,searchSummary:result.searchSummary}:{}),coverage:mode==='point'?'center-test':'partial-allowed'});
     } else if (/^\/api\/spherex\/cutout\/[a-f0-9]{64}$/.test(url.pathname)) {
       const token = url.pathname.split('/').pop();
       const cutout = cutouts.get(token);
@@ -313,4 +322,4 @@ async function handleObservationRequest(request, response) {
   return true;
 }
 
-module.exports = { handleObservationRequest, selectRegionPair, selectTapPair, selectEarlierDates, buildTapQuery, searchObservations, cutoutUrl, downloadCutout, validImageUrl, utcDateFromMjd };
+module.exports = { handleObservationRequest, selectRegionPair, selectTapPair, selectEarlierDates,selectNewerDates, buildTapQuery, searchObservations, cutoutUrl, downloadCutout, validImageUrl, utcDateFromMjd };

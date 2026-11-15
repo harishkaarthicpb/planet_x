@@ -2,6 +2,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { handleObservationRequest } = require('./spherex-observations');
+const { handleReleaseRequest } = require('./spherex-releases');
 
 const port = Number(process.env.PORT ?? 8000);
 const routes = {
@@ -15,6 +16,7 @@ const routes = {
 };
 
 const server = http.createServer(async (request, response) => {
+  if (await handleReleaseRequest(request, response)) return;
   if (await handleObservationRequest(request, response)) return;
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     response.writeHead(405, { Allow: 'GET, HEAD' });

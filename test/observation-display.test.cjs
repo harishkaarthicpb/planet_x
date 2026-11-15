@@ -6,10 +6,12 @@ const { angularSeparationDegrees } = require('../sky-region.mjs');
 const { sampleFitsPreview } = require('../fits-preview.mjs');
 
 // Exercise the browser controller without a live archive or WebGL context.
-function browserController({ invalidProjection = false, displayFails = false, imageCenter = [60,50], history=[], failHistoryDate=null, historyGate=null, historySearchFails=false,clock=performance } = {}) {
+function browserController({ invalidProjection = false, displayFails = false, imageCenter = [60,50], history=[], failHistoryDate=null, historyGate=null, historySearchFails=false,clock=performance,
+  newerHistory=[],releaseData=null,releaseFails=false,failSurveyUrl=null } = {}) {
   const elements = new Map();
   const requests=[];
   const documentEvents={};
+  const intervals=[],baseLayers=[];
   const classes=()=>{const set=new Set();return {add:value=>set.add(value),remove:value=>set.delete(value),contains:value=>set.has(value),toggle(value,on){if(on)set.add(value);else set.delete(value);}};};
   let elementSequence=0;
   const element = id => {
@@ -31,6 +33,7 @@ function browserController({ invalidProjection = false, displayFails = false, im
   let fov = 1, pendingFov = null, options, fits=0;
   const layers = new Map();
   const map = {
+    setBaseImageLayer(image){baseLayers.push(image);setImmediate(()=>image.load());},
     gotoRaDec() {}, setRotation() {}, setFoV(value) { pendingFov = value;fits++; },
     getSize: () => [400,400], getRaDec: () => [60,50], getFov: () => [fov,fov],
     world2pix: (ra,dec) => invalidProjection ? null : [200+(ra-60)*400/fov, 200+(dec-50)*400/fov],
@@ -50,9 +53,13 @@ function browserController({ invalidProjection = false, displayFails = false, im
     cancelAnimationFrame:clearImmediate,
     document: { getElementById: element,createElement:()=>element(`generated-${++elementSequence}`), querySelectorAll: () => [], addEventListener(name,callback){documentEvents[name]=callback;},
       body: { classList:classes() } },
-    window: { addEventListener() {}, innerWidth:400,innerHeight:400,location: { href: 'http://localhost/' } },
+    window: { addEventListener() {},setInterval(callback,milliseconds){intervals.push({callback,milliseconds});}, innerWidth:400,innerHeight:400,location: { href: 'http://localhost/' } },
     fetch: async url => {
       requests.push(String(url));
+      if(String(url).includes('/api/spherex/release'))return releaseFails?
+        {ok:false,status:503,json:async()=>({error:'Release check unavailable'})}:
+        {ok:true,status:200,json:async()=>releaseData || publishedRelease()};
+      if(String(url).includes('mode=newer'))return {ok:true,status:200,json:async()=>({requestId:'newer',observations:typeof newerHistory==='function'?newerHistory(String(url)):newerHistory})};
       if (String(url).includes('mode=history')) return historySearchFails
         ? {ok:false,status:502,json:async()=>({error:'History search failed'})}
         : {ok:true,status:200,json:async()=>({requestId:'history',observations:typeof history==='function'?history(String(url)):history})};
@@ -67,7 +74,8 @@ function browserController({ invalidProjection = false, displayFails = false, im
     testMap: map,
     testA: { HiPS(url,configuration) {
       let opacity=1;
-      const hips={setOpacity(value){opacity=value;},getOpacity:()=>opacity,setFrequency(){},load:()=>configuration.successCallback(hips)};
+      const hips={url,setOpacity(value){opacity=value;},getOpacity:()=>opacity,setFrequency(){},
+        load:()=>failSurveyUrl && url.includes(failSurveyUrl)?configuration.errorCallback(new Error('Map load failed')):configuration.successCallback(hips)};
       return hips;
     }, image(url,configuration) {
       options = configuration;
@@ -85,14 +93,99 @@ function browserController({ invalidProjection = false, displayFails = false, im
     metadata.set('spherex',{hips_cube_depth:'100',em_min:'1e-6',em_max:'5e-6'});
     metadata.set('gaia',{});
     globalThis.controller = { fitComparisonRegion, loadSelectedObservations,loadEarlierObservations, switchMission, clearSelectedRegion,observationTimeline,scrubObservation,togglePlayback,stopPlayback,
+      checkForDataUpdates,updating:()=>checkingUpdates,survey:()=>({...MISSIONS.spherex,channelIndex:CHANNEL_INDEX}),
       playing:()=>!!playback,
       buttons:()=>missionButtons,
       active: () => comparisonActive, mission: () => currentMission,
       cancel: () => { comparisonActive=false; selectedRegion=null; },
       state: () => pairState };
   `,context);
-  return { controller:context.controller, element, options:() => options, layers,requests,fits:()=>fits,document:context.document,documentEvents };
+  return { controller:context.controller, element, options:() => options, layers,requests,fits:()=>fits,document:context.document,documentEvents,intervals,baseLayers };
 }
+
+function publishedRelease(release=1){
+  return {checkedAt:'2026-11-14T00:00:00Z',stale:false,warnings:[],survey:{
+    url:release===1?'https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube':`https://irsa.ipac.caltech.edu/data/hips/SPHEREx/test_dr${release}_cube`,
+    release:`DR${release}`,revision:`test-revision-${release}`,channelIndex:1,
+    properties:{creator_did:`ivo://IPAC/P/SPHEREx/DR${release}/cube`,hips_cube_depth:'3',em_min:'1e-6',em_max:'5e-6',
+      data_cube_crval3_arr:'1 3.293 5',hips_tile_format:'png'}
+  }};
+}
+
+test('release refresh upgrades a compatible map and appends newer dates without changing the crop or frame',async()=>{
+  const browser=browserController({releaseData:publishedRelease(2),newerHistory:url=>
+    new URL(url,'http://localhost').searchParams.get('after').startsWith('2026-08-25')?
+      [{observedStart:'2026-08-26T01:00:00Z',band:'SPHEREx-D2',cutoutUrl:'/newer/26',coverage:'full'}]:[]});
+  await browser.controller.loadSelectedObservations();
+  const state=browser.controller.state(),fits=browser.fits(),crop=browser.element('region-map').style.getPropertyValue('--region-clip');
+  assert.equal(await browser.controller.checkForDataUpdates(),true);
+  assert.match(browser.controller.survey().name,/DR2/);
+  assert.equal(browser.controller.survey().channelIndex,1);
+  assert.equal(state.frames.size,2);
+  assert.equal(browser.controller.mission(),'observation-0');
+  assert.equal(state.frames.get('observation-0').image.getOpacity(),1);
+  assert.equal(browser.fits(),fits);
+  assert.equal(browser.element('region-map').style.getPropertyValue('--region-clip'),crop);
+  assert.ok(browser.requests.includes('/api/spherex/release'));
+  assert.ok(browser.requests.every(url=>!url.includes('refresh=1')));
+  const query=new URL(browser.requests.find(url=>url.includes('mode=newer')),'http://localhost').searchParams;
+  assert.equal(query.get('after'),'2026-08-25T07:03:31Z');
+  assert.equal(query.get('band'),'SPHEREx-D2');
+  const replacements=browser.baseLayers.length;
+  await browser.controller.checkForDataUpdates();
+  assert.equal(browser.baseLayers.length,replacements);
+  assert.equal(browser.requests.filter(url=>url==='/newer/26').length,1);
+});
+
+test('release discovery failure still checks weekly observations and retains the current map',async()=>{
+  const browser=browserController({releaseFails:true,newerHistory:[
+    {observedStart:'2026-08-26T01:00:00Z',band:'SPHEREx-D2',cutoutUrl:'/newer/26',coverage:'full'}]});
+  await browser.controller.loadSelectedObservations();
+  const survey=browser.controller.survey();
+  assert.equal(await browser.controller.checkForDataUpdates(),false);
+  assert.equal(browser.controller.survey().url,survey.url);
+  assert.equal(browser.controller.state().frames.size,2);
+  assert.match(browser.element('data-freshness').textContent,/current map is retained/);
+});
+
+test('failed new map load restores the previous survey and keeps resident observations usable',async()=>{
+  const browser=browserController({releaseData:publishedRelease(2),failSurveyUrl:'test_dr2'});
+  await browser.controller.loadSelectedObservations();
+  const original=browser.controller.survey();
+  assert.equal(await browser.controller.checkForDataUpdates(),false);
+  assert.equal(browser.controller.survey().url,original.url);
+  assert.equal(browser.baseLayers.at(-1).url,original.url);
+  assert.equal(browser.controller.state().ready,true);
+  assert.equal(browser.controller.state().frames.get('observation-0').image.getOpacity(),1);
+});
+
+test('daily updates run only while the page is visible',async()=>{
+  const browser=browserController();
+  assert.equal(browser.intervals.length,1);
+  assert.equal(browser.intervals[0].milliseconds,86400000);
+  browser.document.hidden=true;
+  browser.intervals[0].callback();
+  assert.equal(browser.requests.length,0);
+  browser.document.hidden=false;
+  browser.intervals[0].callback();
+  while(browser.controller.updating())await new Promise(resolve=>setImmediate(resolve));
+  assert.ok(browser.requests.some(url=>url.includes('/api/spherex/release')));
+});
+
+test('a failed newer download retries the original batch without downloading successful dates again',async()=>{
+  let fail=true;
+  const dates=[26,27].map(day=>({observedStart:`2026-08-${day}T01:00:00Z`,band:'SPHEREx-D2',cutoutUrl:`/newer/${day}`,coverage:'full'}));
+  const browser=browserController({newerHistory:dates,failHistoryDate:url=>fail && url==='/newer/26'});
+  await browser.controller.loadSelectedObservations();
+  await browser.controller.checkForDataUpdates();
+  assert.equal(browser.controller.state().frames.size,2);
+  fail=false;
+  await browser.controller.checkForDataUpdates();
+  assert.equal(browser.controller.state().frames.size,3);
+  const searches=browser.requests.filter(url=>url.includes('mode=newer'));
+  assert.ok(searches.every(url=>new URL(url,'http://localhost').searchParams.get('after')==='2026-08-25T07:03:31Z'));
+  assert.equal(browser.requests.filter(url=>url==='/newer/27').length,1);
+});
 
 test('region crop waits for zoom updates and fits all four corners', async () => {
   const browser = browserController();

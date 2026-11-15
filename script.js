@@ -34,11 +34,15 @@ function diagnosticUrl(value) {
   url.username='';url.password='';return url.href;
 }
 
-const CHANNEL_INDEX = 62; // Fixed wavelength channel, not an observation date.
+let CHANNEL_INDEX = 62; // Selected from each verified release's wavelength metadata.
+let releaseSignature = null;
+let checkingUpdates = false;
+let lastUpdateCheck = Date.now();
 const status = document.getElementById('status');
 const missionButtons = [...document.querySelectorAll('[data-mission]')];
 const missionSwitch = document.getElementById('mission-switch');
 const historyButton = document.getElementById('load-history');
+const dataFreshness = document.getElementById('data-freshness');
 const filmstrip = document.getElementById('observation-filmstrip');
 const filmstripTrack = document.getElementById('filmstrip-track');
 const filmstripWindow = document.getElementById('filmstrip-window');
@@ -123,10 +127,52 @@ function updateCursorCoordinates(position) {
   }
 }
 
+function configureSpherexSurvey(survey) {
+  const properties=survey.properties;
+  const release=properties.creator_did?.match(/^ivo:\/\/IPAC\/P\/SPHEREx\/DR([1-9]\d*)\/cube$/i)?.[1];
+  const wavelengths=(properties.data_cube_crval3_arr || '').trim().split(/\s+/).map(Number);
+  const channel=survey.channelIndex ?? wavelengths.reduce((best,value,index)=>
+    Math.abs(value-3.293)<Math.abs(wavelengths[best]-3.293)?index:best,0);
+  const url=new URL(survey.url);
+  if(!release || url.origin!=='https://irsa.ipac.caltech.edu' || !url.pathname.startsWith('/data/hips/') ||
+    url.search || url.hash || url.username || url.password || !Number.isInteger(channel) ||
+    !Number.isFinite(wavelengths[channel]) || Math.abs(wavelengths[channel]-3.293)>.05){
+    throw new Error('The published SPHEREx map is not compatible with this viewer.');
+  }
+  CHANNEL_INDEX=channel;
+  Object.assign(MISSIONS.spherex,{url:survey.url,name:`SPHEREx DR${release} — ${wavelengths[channel].toFixed(3)} µm`,
+    credit:`SPHEREx DR${release} · NASA/Caltech/IPAC`,
+    description:`SPHEREx DR${release} infrared sky, fixed wavelength near ${wavelengths[channel].toFixed(3)} µm.`});
+  metadata.set('spherex',properties);
+  releaseSignature=`${survey.url}|${survey.revision || [properties.creator_did,properties.hips_release_date,properties.hips_creation_date].join('|')}`;
+}
+
+async function fetchPublishedSurvey() {
+  const response=await fetch('/api/spherex/release',{cache:'no-store',signal:AbortSignal.timeout(25000)});
+  const result=await response.json();
+  if(!response.ok || !result.survey?.properties)throw new Error(result.error || 'The latest whole-sky release could not be checked.');
+  return result;
+}
+
+function describeReleaseCheck(result) {
+  const release=result.survey.release;
+  dataFreshness.textContent=result.stale?`${release} retained; release check is temporarily unavailable.`:
+    `${release} · release checked ${new Date(result.checkedAt).toLocaleString()} · new observation batches are checked daily while this page is open.`;
+  if(result.newerAdvertised)dataFreshness.textContent+=' A newer map is published but needs a compatibility update.';
+  else if(result.warnings?.length)dataFreshness.textContent+=' Full release discovery is temporarily incomplete.';
+}
+
 async function getProperties(id) {
   if (metadata.has(id)) return metadata.get(id);
+  if(id==='spherex'){
+    try{
+      const result=await fetchPublishedSurvey();
+      configureSpherexSurvey(result.survey);describeReleaseCheck(result);
+      return result.survey.properties;
+    }catch(error){observationLog('SPHEREx release check','unavailable',{message:error.message});}
+  }
   const response = await fetch(`${MISSIONS[id].url}/properties`, {
-    signal: AbortSignal.timeout(15000)
+    signal: AbortSignal.timeout(15000),cache:'no-store'
   });
   if (!response.ok) throw new Error(`${MISSIONS[id].name} returned HTTP ${response.status}`);
   const properties = Object.fromEntries((await response.text()).split('\n')
@@ -141,8 +187,67 @@ async function getProperties(id) {
   if (id === 'gaia' && properties.creator_did !== 'ivo://ESAVO/P/GAIA/DR3-RGB') {
     throw new Error('The Gaia service did not return the expected DR3 dataset.');
   }
+  if(id==='spherex'){
+    configureSpherexSurvey({url:MISSIONS.spherex.url,properties});
+    dataFreshness.textContent=`${MISSIONS.spherex.name} loaded; automatic release discovery is temporarily unavailable.`;
+  }
   metadata.set(id, properties);
   return properties;
+}
+
+async function refreshPublishedSurvey() {
+  const result=await fetchPublishedSurvey(),survey=result.survey;
+  const signature=`${survey.url}|${survey.revision}`;
+  if(signature===releaseSignature){describeReleaseCheck(result);return false;}
+  const previous={mission:{...MISSIONS.spherex},properties:metadata.get('spherex'),channel:CHANNEL_INDEX,signature:releaseSignature};
+  configureSpherexSurvey(survey);
+  switching=true;updateMissionControls();
+  try{
+    if(baseMission==='spherex')await applyLayer('spherex',survey.properties);
+    if(regionSurvey?.id==='spherex'){
+      if(comparisonActive && currentMission==='spherex'){
+        const state={region:selectedRegion,id:'spherex',image:null};regionSurvey=state;
+        state.image=await applyLayer('spherex',survey.properties,comparisonMap,REGION_SURVEY_LAYER);
+        if(regionSurvey===state && comparisonActive)state.image.setOpacity(1);
+      }else{
+        regionSurvey=null;comparisonMap.removeImageLayer(REGION_SURVEY_LAYER);
+      }
+    }
+    updateSourceDescription();describeReleaseCheck(result);return true;
+  }catch(error){
+    Object.assign(MISSIONS.spherex,previous.mission);CHANNEL_INDEX=previous.channel;releaseSignature=previous.signature;
+    if(previous.properties){
+      metadata.set('spherex',previous.properties);
+      try{
+        if(baseMission==='spherex')await applyLayer('spherex',previous.properties);
+        if(comparisonActive && currentMission==='spherex'){
+          const state={region:selectedRegion,id:'spherex',image:null};regionSurvey=state;
+          state.image=await applyLayer('spherex',previous.properties,comparisonMap,REGION_SURVEY_LAYER);
+          state.image.setOpacity(1);
+        }
+      }catch(restoreError){observationLog('Map restoration','error',{message:restoreError.message});}
+    }else metadata.delete('spherex');
+    throw error;
+  }finally{switching=false;updateMissionControls();}
+}
+
+async function checkForDataUpdates() {
+  if(!skyMap || switching || checkingUpdates || pairState?.pending || pairState?.historyPending)return false;
+  checkingUpdates=true;updateMissionControls();
+  let verified=false;
+  try{
+    try{await refreshPublishedSurvey();verified=true;}
+    catch(error){dataFreshness.textContent='The map update check failed; the current map is retained.';
+      observationLog('SPHEREx release check','unavailable',{message:error.message});}
+    if(pairState?.ready){
+      // Re-enable older-date discovery too: a new release can backfill data
+      // that were not searchable when a previous history check was exhausted.
+      pairState.historyExhausted=false;
+      await loadEarlierObservations({newer:true});
+    }
+    lastUpdateCheck=Date.now();
+    return verified;
+  }finally{checkingUpdates=false;updateMissionControls();}
 }
 
 function applyLayer(id, properties, viewer = skyMap, layer = null) {
@@ -828,26 +933,28 @@ async function readArchiveResponse(response, step) {
   return response.json();
 }
 
-async function loadEarlierObservations() {
+async function loadEarlierObservations({newer=false}={}) {
   const state=pairState, selection=selectedPair;
-  if (!selectedRegion || !state?.ready || state.pending || state.historyPending || state.historyExhausted || switching) return false;
-  const anchor=state.historyAnchor || selection.observations[isObservation(currentMission)?observationIndex(currentMission):0];
-  state.historyAnchor=anchor;
+  if (!selectedRegion || !state?.ready || state.pending || state.historyPending || (!newer && state.historyExhausted) || switching) return false;
+  const anchor=newer?(state.newerAnchor || selection.observations.reduce((latest,exposure)=>
+    Date.parse(exposure.observedStart)>Date.parse(latest.observedStart)?exposure:latest)):
+    (state.historyAnchor || selection.observations[isObservation(currentMission)?observationIndex(currentMission):0]);
+  if(newer)state.newerAnchor=anchor;else state.historyAnchor=anchor;
   state.historyPending=true;
   preloadProgress.hidden=false;
-  preloadProgress.textContent=`Finding up to 10 dates before ${anchor.observedStart.slice(0,10)} UTC · ${anchor.band}…`;
+  preloadProgress.textContent=`Finding up to 10 dates ${newer?'after':'before'} ${anchor.observedStart.slice(0,10)} UTC · ${anchor.band}…`;
   updateMissionControls();
   try {
-    const query=new URLSearchParams({corners:JSON.stringify(state.region.corners),mode:'history',
-      before:anchor.observedStart,band:anchor.band,limit:'10'});
+    const query=new URLSearchParams({corners:JSON.stringify(state.region.corners),mode:newer?'newer':'history',
+      [newer?'after':'before']:anchor.observedStart,band:anchor.band,limit:'10'});
     const response=await fetch(`/api/spherex/observations?${query}`,{
       signal:AbortSignal.any([state.controller.signal,AbortSignal.timeout(105000)])});
-    const result=await readArchiveResponse(response,'Earlier-date search');
+    const result=await readArchiveResponse(response,newer?'Newer-date search':'Earlier-date search');
     if (pairState!==state || state.controller.signal.aborted) return false;
     if (!Array.isArray(result.observations) || result.observations.length>10 || result.observations.some(exposure=>
       !exposure.cutoutUrl || !Number.isFinite(Date.parse(exposure.observedStart)) || exposure.band!==anchor.band ||
-      exposure.observedStart.slice(0,10)>=anchor.observedStart.slice(0,10))) {
-      throw new Error('The archive returned invalid earlier observations.');
+      (newer?exposure.observedStart.slice(0,10)<=anchor.observedStart.slice(0,10):exposure.observedStart.slice(0,10)>=anchor.observedStart.slice(0,10)))) {
+      throw new Error('The archive returned observations outside the requested dates.');
     }
     const dates=new Set(selection.observations.map(exposure=>exposure.observedStart.slice(0,10)));
     const candidates=result.observations.filter(exposure=>!dates.has(exposure.observedStart.slice(0,10)));
@@ -858,7 +965,7 @@ async function loadEarlierObservations() {
       if (dates.has(date)) continue;
       const id=`observation-${selection.observations.length}`,blobCount=state.blobUrls.length;
       try {
-        preloadProgress.textContent=`Loading earlier date ${offset+1}/${candidates.length} · ${date} UTC…`;
+        preloadProgress.textContent=`Loading ${newer?'newer':'earlier'} date ${offset+1}/${candidates.length} · ${date} UTC…`;
         observationLog('Earlier image download','start',{requestId:result.requestId,date,url:diagnosticUrl(exposure.cutoutUrl),originalUrl:exposure.downloadUrl});
         const cutout=await fetch(exposure.cutoutUrl,{
           signal:AbortSignal.any([state.controller.signal,AbortSignal.timeout(105000)])});
@@ -889,8 +996,9 @@ async function loadEarlierObservations() {
       }
     }
     if (pairState!==state || state.controller.signal.aborted) return false;
-    state.historyRetry=failures.length>0;
-    if(!failures.length){
+    if(!newer)state.historyRetry=failures.length>0;
+    if(newer && !failures.length)state.newerAnchor=null;
+    if(!newer && !failures.length){
       // Advance only after this batch is complete. A retry keeps its original
       // anchor so a failed date is not skipped when looking farther back.
       const oldest=result.observations.reduce((earliest,exposure)=>
@@ -899,16 +1007,16 @@ async function loadEarlierObservations() {
       state.historyExhausted=!result.searchLimited && result.observations.length<10;
     }
     const count=selection.observations.length-1;
-    preloadProgress.textContent=`${count} earlier date${count===1?'':'s'} loaded · ${anchor.band} · before ${anchor.observedStart.slice(0,10)} UTC`+
+    preloadProgress.textContent=`${count} additional date${count===1?'':'s'} loaded · ${anchor.band} · checked ${newer?'after':'before'} ${anchor.observedStart.slice(0,10)} UTC`+
       (result.searchSummary?` · This search: ${result.searchSummary.matchingExposures} exposures across ${result.searchSummary.matchingDates} UTC dates.`:'')+
-      (failures.length?` · ${failures.length} failed; use Retry earlier dates.`:'')+
-      (state.historyExhausted?' · No earlier same-band dates remaining.':'')+
+      (failures.length?(newer?` · ${failures.length} failed; retrying at the next daily check.`:` · ${failures.length} failed; use Retry earlier dates.`):'')+
+      (!newer && state.historyExhausted?' · No earlier same-band dates remaining.':'')+
       (result.searchLimited?' · Search capped; more dates may exist.':'');
     return true;
   } catch(error) {
     if (pairState===state && !state.controller.signal.aborted) {
-      state.historyRetry=true;
-      preloadProgress.textContent=`Earlier dates unavailable: ${error.message}. The loaded observation is still available.`;
+      if(!newer)state.historyRetry=true;
+      preloadProgress.textContent=`${newer?'Newer':'Earlier'} dates unavailable: ${error.message}. The loaded observation is still available.`;
       observationLog('Earlier-date search','error',{message:error.message});
     }
     return false;
@@ -923,7 +1031,11 @@ historyButton.addEventListener('click', loadEarlierObservations);
 filmstripPlay.addEventListener('click',togglePlayback);
 observationScrubber.addEventListener('input',scrubObservation);
 observationScrubber.addEventListener('pointerdown',stopPlayback);
-document.addEventListener('visibilitychange',()=>{if(document.hidden)stopPlayback();});
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden)stopPlayback();
+  else if(Date.now()-lastUpdateCheck>=86400000)void checkForDataUpdates();
+});
+window.setInterval(()=>{if(!document.hidden)void checkForDataUpdates();},86400000);
 clearRegionButton.addEventListener('click', clearSelectedRegion);
 loadObservationButton.addEventListener('click', loadSelectedObservations);
 backToSkyButton.addEventListener('click', () => { leaveComparison(); updateSourceDescription(); updateMissionControls(); });

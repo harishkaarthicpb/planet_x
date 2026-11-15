@@ -1,14 +1,43 @@
 # Current simplified rectangle flow
 
+## Automatic archive updates
+
+On opening the app and daily while the page is visible, the viewer checks
+IRSA's official HiPS catalogue and the actual survey properties. There is no
+manual refresh button or public cache-bypass parameter. A higher official SPHEREx DR cube is selected
+only after its metadata confirms a full-sky PNG cube with a compatible 3.293 µm
+channel; release labels and channel indices come from that metadata. URLs are
+restricted to IRSA's HiPS services. The resolver caches checks for one day,
+retains its last verified release during outages, and never downgrades to an
+older release due to a temporarily stale catalogue. A failed map load restores
+the prior survey. Future incompatible formats require viewer changes.
+
+For a loaded region, the same check searches for up to ten newer UTC dates
+after its newest loaded day, adding them to the filmstrip without changing the
+selected frame or crop. Further checks continue from the latest loaded date;
+failed downloads retain the batch anchor for retry. This keeps one image per
+day and the same detector band. Older-date discovery is re-enabled after a
+check to allow archive backfills. Existing frames are not replaced by later
+reprocessing of the same date. Nothing polls while the page is closed.
+
+Weekly images enter through IRSA's searchable observations, independently of
+whole-sky releases; the app does not construct a whole-sky mosaic from them.
+Discovery uses SIA `INSTRUMENT=SPHEREx` rather than fixed DR/QR collection names,
+and permits official numbered DR/QR level-2 FITS paths. Availability depends on
+IRSA publishing and indexing the data. Search results remain capped at 1,000
+records. Future DR2 discovery and failure handling are tested with synthetic
+release metadata; browser/WebGL upgrades have not been live verified.
+
 ## Discovery coverage
 
 Initial discovery now asks for up to 1,000 records and chooses the newest usable
 returned exposure covering the selected center. This replaces the arbitrary
 first-row/MAXREC=1 choice, which could start the earlier-date search too far
-back. QR3 wide/deep collections are searched first; DR1 wide/deep are the fallback
-when QR3 has no usable match. A capped response cannot prove global newestness.
+back. All searchable SPHEREx collections participate through the instrument
+filter, including newly published releases. A capped response cannot prove
+global newestness.
 
-Earlier-date searches now include all four wide/deep collections. Per
+Earlier-date searches include searchable wide/deep collections. Per
 https://irsa.ipac.caltech.edu/spherex-archive-documentation/spherex-data-access/,
 the `_deep` collections contain additional spectral image coverage omitted by
 the earlier wide-only queries. History responses include counts of matching
@@ -61,8 +90,8 @@ there is no eleven-image session limit. Existing frames remain resident and
 the filmstrip/playback includes all loaded dates. Adding dates pauses playback
 and preserves the displayed image.
 
-The new `mode=history` API uses SIA `TIME=-Inf <anchor-midnight-MJD>` and both
-QR3/DR1 wide and deep collections. IRSA's TIME format is documented at
+The new `mode=history` API uses SIA `TIME=-Inf <anchor-midnight-MJD>` and the
+SPHEREx instrument filter. IRSA's TIME format is documented at
 https://irsa.ipac.caltech.edu/ibe/sia.html. Results are capped at 1,000 rows;
 the selector chooses the newest distinct dates within those returned rows,
 not a proven global latest-ten result. The UI reports a capped search.

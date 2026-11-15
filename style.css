@@ -253,13 +253,16 @@ body.region-comparison #draw-region { display: none; }
 #observation-scrubber:focus-visible { outline: 2px solid #a5c8ff; outline-offset: 3px; border-radius: 4px; }
 #observation-scrubber:disabled { opacity: .4; cursor: default; }
 #filmstrip-help { color: #aeb8c7; font-size: 10px; }
-body.has-filmstrip #mission-switch { bottom: max(226px, calc(env(safe-area-inset-bottom) + 214px)); }
+body.has-filmstrip #mission-switch { bottom: max(160px, calc(env(safe-area-inset-bottom) + 148px)); }
 body.has-multiple-observations #mission-switch [data-mission^="observation-"] { display: none; }
-body.has-filmstrip #preload-progress { bottom: max(274px, calc(env(safe-area-inset-bottom) + 262px)); }
-body.has-filmstrip #status { bottom: max(226px, calc(env(safe-area-inset-bottom) + 214px)); }
+body.has-filmstrip #preload-progress { bottom: max(208px, calc(env(safe-area-inset-bottom) + 196px)); }
+body.has-filmstrip #status { bottom: max(160px, calc(env(safe-area-inset-bottom) + 148px)); }
+body.has-filmstrip:has(#observation-details[open]) #mission-switch,
+body.has-filmstrip:has(#observation-details[open]) #status { bottom: max(250px, calc(env(safe-area-inset-bottom) + 238px)); }
+body.has-filmstrip:has(#observation-details[open]) #preload-progress { bottom: max(298px, calc(env(safe-area-inset-bottom) + 286px)); }
 #spectrum-player {
   position: fixed; left: 50%; bottom: max(52px, calc(env(safe-area-inset-bottom) + 40px)); transform: translateX(-50%);
-  z-index: 11; box-sizing: border-box; width: min(760px, calc(100% - 32px)); padding: 12px;
+  z-index: 11; box-sizing: border-box; width: min(600px, calc(100% - 32px)); padding: 10px 12px;
   border: 1px solid #ffffff30; border-radius: 14px; background: #10141bf2; color: #c7cfdb; font: 11px/1.4 system-ui, sans-serif;
 }
 #spectrum-value { font-variant-numeric: tabular-nums; color: #ffe66d; }
@@ -296,3 +299,15 @@ body.has-spectrum #mission-switch { display: none; }
 #spectrum-range-error { margin: 8px 0; color: #ffb4b4; }
 #prepare-spectrum-range { padding: 6px 10px; border: 1px solid #ffffff40; border-radius: 7px; background: #202a38; color: #eee; font: inherit; cursor: pointer; }
 #prepare-spectrum-range:disabled { opacity: .4; cursor: default; }
+.player-details > summary { width: fit-content; margin-top: 4px; color: #aeb8c7; cursor: pointer; }
+.player-details[open] > summary { margin-bottom: 10px; color: #e5ebf3; }
+.player-details small { display: block; margin-top: 8px; }
+#observation-filmstrip, #spectrum-player { max-height: calc(100dvh - 110px); overflow-y: auto; }
+#spectrum-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#tools-toggle {
+  position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom));
+  z-index: 30; padding: 6px 10px; border: 1px solid #ffffff40; border-radius: 999px;
+  background: #10141bd9; color: #dce5f2; font: 11px/1.5 system-ui, sans-serif; cursor: pointer;
+}
+#tools-toggle:focus-visible, .player-details > summary:focus-visible { outline: 2px solid #a5c8ff; outline-offset: 3px; }
+body.tools-hidden :is(#coordinate-panel, #wavelength-panel, #mission-switch, #observation-filmstrip, #spectrum-player, #cursor-coordinates, #preload-progress) { display: none; }

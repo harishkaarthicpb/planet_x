@@ -50,6 +50,16 @@ let deferredSurveyUpdate = false;
 let checkingUpdates = false;
 let lastUpdateCheck = Date.now();
 const status = document.getElementById('status');
+const toolsToggle = document.getElementById('tools-toggle');
+let toolsHidden = false;
+
+function setToolsHidden(hidden) {
+  toolsHidden=hidden;
+  document.body.classList.toggle('tools-hidden',hidden);
+  toolsToggle.textContent=hidden?'Show tools · H':'Hide tools · H';
+  toolsToggle.setAttribute('aria-expanded',String(!hidden));
+}
+toolsToggle.addEventListener('click',()=>setToolsHidden(!toolsHidden));
 const missionButtons = [...document.querySelectorAll('[data-mission]')];
 const missionSwitch = document.getElementById('mission-switch');
 const historyButton = document.getElementById('load-history');
@@ -492,6 +502,7 @@ async function prepareSelectedSpectrum(state) {
       state.ready=false;
       observationLog('Spectrum preparation','error',{message:error.message,channel:state.loadingChannel,
         buffered:state.frames.filter(Boolean).length});
+      document.getElementById('spectrum-settings').open=true;
       spectrumHelp.textContent=`Preparation stopped: ${error.message} Use Explore infrared to retry; buffered frames are retained.`;
     }
     return false;
@@ -1452,6 +1463,11 @@ backToSkyButton.addEventListener('click', () => {
   if(deferredSurveyUpdate)void checkForDataUpdates();
 });
 document.addEventListener('keydown', event => {
+  const editing=event.target?.isContentEditable || ['INPUT','TEXTAREA','SELECT'].includes(event.target?.tagName);
+  if(!editing && !event.ctrlKey && !event.metaKey && !event.altKey && !event.repeat && event.key?.toLowerCase()==='h'){
+    event.preventDefault();setToolsHidden(!toolsHidden);toolsToggle.focus?.();return;
+  }
+  if(event.key==='Escape' && toolsHidden)setToolsHidden(false);
   if (event.key === 'Escape' && drawingRegion) clearSelectedRegion();
 });
 // Prevent navigation in the comparison while preserving cursor-coordinate reads.

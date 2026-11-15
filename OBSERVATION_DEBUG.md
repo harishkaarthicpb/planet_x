@@ -1,5 +1,22 @@
 # Current simplified rectangle flow
 
+## Compact viewing controls
+
+Sky tools start collapsed. The spectrum player keeps wavelength, Play/Pause
+and the scrubber visible, with all range controls, band indicators and help in
+a native expandable details section. The time player similarly keeps its
+scrubber and playback controls visible and offers expandable thumbnails/help.
+Settings stay mounted, so collapsing controls does not discard buffered data.
+
+The persistent Hide tools/Show tools pill and H shortcut hide or restore the
+search panel, source controls, players, sky slider and coordinate readout.
+Playback, selected ranges, frames and the camera stay unchanged. The shortcut
+ignores typing in fields, modifier shortcuts and held-key repeats. Escape also
+restores hidden tools. Credits, map errors and active infrared preparation
+progress remain visible. A spectrum preparation error opens its settings so
+the error and retry controls are easy to find. Expanded player panels scroll
+within the viewport on small screens.
+
 ## Rectangle modes: Time or Infrared
 
 The region tool offers mutually exclusive Time and Infrared radio choices.

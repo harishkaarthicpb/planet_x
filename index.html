@@ -20,8 +20,11 @@
         <small id="spectrum-loading-detail">Preparing the selected region. Playback will be available when loading finishes.</small>
       </div>
     </section>
-    <details id="coordinate-panel" open>
-      <summary>Sky coordinate search</summary>
+    <button id="tools-toggle" type="button" aria-expanded="true"
+      aria-controls="coordinate-panel wavelength-panel mission-switch observation-filmstrip spectrum-player cursor-coordinates preload-progress"
+      title="Hide or show tools (H)">Hide tools · H</button>
+    <details id="coordinate-panel">
+      <summary>Sky tools</summary>
       <form id="coordinate-search" novalidate>
         <fieldset id="coordinate-fields" disabled>
           <legend class="sr-only">Equatorial sky coordinates in degrees</legend>
@@ -110,24 +113,30 @@
         <output id="filmstrip-date" for="observation-scrubber" aria-live="off"></output>
         <button id="filmstrip-play" type="button" aria-label="Play observations" aria-pressed="false" disabled>▶ Play</button>
       </div>
-      <div id="filmstrip-window" class="filmstrip-window" aria-hidden="true">
-        <div id="filmstrip-track"></div>
-        <span class="filmstrip-playhead"></span>
-      </div>
       <input id="observation-scrubber" type="range" min="0" max="0" step="1" value="0"
         aria-describedby="filmstrip-help" disabled>
-      <small id="filmstrip-help">Load earlier dates to scrub through observations.</small>
+      <details id="observation-details" class="player-details">
+        <summary>Thumbnails &amp; help</summary>
+        <div id="filmstrip-window" class="filmstrip-window" aria-hidden="true">
+          <div id="filmstrip-track"></div>
+          <span class="filmstrip-playhead"></span>
+        </div>
+        <small id="filmstrip-help">Load earlier dates to scrub through observations.</small>
+      </details>
     </section>
     <section id="spectrum-player" aria-label="Selected region infrared spectrum" hidden>
-      <div id="player-spectrum-range-slot"></div>
       <div class="filmstrip-heading">
         <label for="spectrum-scrubber">Infrared spectrum</label>
         <output id="spectrum-value" for="spectrum-scrubber" aria-live="off"></output>
         <button id="spectrum-play" type="button" aria-label="Play spectrum" aria-pressed="false" disabled>▶ Play</button>
       </div>
-      <div id="spectrum-bands" aria-hidden="true"></div>
       <input id="spectrum-scrubber" type="range" min="0" max="101" step="1" value="62" disabled aria-describedby="spectrum-help">
-      <small id="spectrum-help">Same region, different wavelengths. This is a sky mosaic, not a time sequence.</small>
+      <details id="spectrum-settings" class="player-details">
+        <summary>Tools &amp; wavelength range</summary>
+        <div id="player-spectrum-range-slot"></div>
+        <div id="spectrum-bands" aria-hidden="true"></div>
+        <small id="spectrum-help">Same region, different wavelengths. This is a sky mosaic, not a time sequence.</small>
+      </details>
     </section>
     <div id="cursor-coordinates" aria-label="Cursor coordinates in equatorial ICRS" aria-live="off"
       title="Sky coordinates under your cursor, in ICRS degrees">RA — · Dec — · ICRS</div>

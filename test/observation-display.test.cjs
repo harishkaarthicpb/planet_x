@@ -291,6 +291,29 @@ test('a selected wavelength interval buffers only those bands and loops within i
   }finally{browser.controller.stopSpectrum();}
 });
 
+test('hiding and restoring tools preserves spectrum playback, range and buffered frames',async()=>{
+  const browser=browserController({clock:{now:()=>0}});await browser.controller.initializeSurvey(wavelengthSurvey());
+  setSpectrumRange(browser,17,19);await browser.controller.chooseRegionMode('infrared');
+  const state=browser.controller.spectrum(),frames=[...state.frames],captures=browser.captures.length,toggle=browser.element('tools-toggle');
+  try{
+    browser.controller.toggleSpectrum();toggle.listeners.click();
+    assert.equal(browser.document.body.classList.contains('tools-hidden'),true);
+    assert.equal(toggle.getAttribute('aria-expanded'),'false');
+    assert.match(toggle.textContent,/Show tools/);assert.equal(state.playing,true);
+    assert.equal(browser.controller.spectrum(),state);assert.deepEqual([...state.frames],frames);
+    toggle.listeners.click();assert.equal(browser.document.body.classList.contains('tools-hidden'),false);
+    assert.equal(toggle.getAttribute('aria-expanded'),'true');
+    browser.documentEvents.keydown({key:'h',target:{tagName:'INPUT'},preventDefault(){}});
+    assert.equal(browser.document.body.classList.contains('tools-hidden'),false,'Typing in a control must not hide tools');
+    browser.documentEvents.keydown({key:'h',target:{tagName:'BUTTON'},preventDefault(){}});
+    assert.equal(browser.document.body.classList.contains('tools-hidden'),true);
+    browser.documentEvents.keydown({key:'Escape',target:{tagName:'BODY'}});
+    assert.equal(browser.document.body.classList.contains('tools-hidden'),false);
+    assert.equal(state.playing,true);assert.equal(browser.captures.length,captures);
+    assert.deepEqual(Array.from(state.channels),[17,18,19]);
+  }finally{browser.controller.stopSpectrum();}
+});
+
 test('narrowing a buffered interval reuses frames and reversed endpoints are rejected',async()=>{
   const browser=browserController();await browser.controller.initializeSurvey(wavelengthSurvey());
   await browser.controller.chooseRegionMode('infrared');

@@ -1,3 +1,24 @@
+# Current change: SPHEREx instrument scope only
+
+SIA requests now send `INSTRUMENT=SPHEREx` instead of named COLLECTION
+parameters. The initial search makes one SPHEREx request rather than preferring
+QR3 then trying DR1. The restored center position, date/band selection, image
+loading, timeouts and per-request limits remain. There is no discovery lookup,
+new API mode or alternate search system. The instrument value is present in
+the previously saved official IRSA service metadata. No live success is claimed.
+The earlier exact working baseline remains available for backtracking.
+
+# Restored working checkpoint
+
+The browser and observation backend match the user's supplied working source
+attachments byte for byte. Time uses the original center search and release
+sequence, loads one initial image, and requests earlier same-band dates in
+batches of ten. New collection discovery, global database timeline, polygon
+search and wavelength linking have been removed. Other mission tabs, infrared
+view and existing hide controls remain as in that supplied version.
+
+This is a source restoration, not a verified live archive recovery.
+
 # Current simplified rectangle flow
 
 ## Hide observation dates from the timeline

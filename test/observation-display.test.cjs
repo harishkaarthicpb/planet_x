@@ -993,16 +993,19 @@ test('successive requests append older batches beyond ten dates while keeping ex
   const state=browser.controller.state(),original=state.frames.get('observation-0').image;
   await browser.controller.loadEarlierObservations();
   assert.equal(browser.element('load-history').textContent,'Load 10 more dates');
+  assert.match(browser.element('preload-progress').textContent,/10 dates added this batch · 11 total dates loaded/);
   assert.equal(browser.element('load-history').disabled,false);
   browser.controller.togglePlayback();
   try{
     const displayed=browser.controller.mission();
     await browser.controller.loadEarlierObservations();
     assert.equal(state.frames.size,21);
+    assert.match(browser.element('preload-progress').textContent,/10 dates added this batch · 21 total dates loaded/);
     assert.equal(browser.controller.mission(),displayed);
     assert.equal(browser.controller.playing(),false,'New dates pause playback instead of shifting the playing sequence');
     await browser.controller.loadEarlierObservations();
     assert.equal(state.frames.size,23);
+    assert.match(browser.element('preload-progress').textContent,/2 dates added this batch · 23 total dates loaded/);
     assert.equal(state.frames.get('observation-0').image,original);
     const timeline=browser.controller.observationTimeline();
     assert.equal(new Set(timeline.map(entry=>entry.exposure.observedStart.slice(0,10))).size,23);

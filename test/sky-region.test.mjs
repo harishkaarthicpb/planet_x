@@ -245,8 +245,8 @@ test('single-image rectangle action accepts any band and prefers the newest usab
  const first=row('newest-usable',61300);first[4]='SPHEREx-D2';first[6]='1.10e-6';first[7]='1.62e-6';
  globalThis.fetch=async(url)=>{
    const parsed=new URL(url);calls.push(parsed);
-   assert.equal(parsed.searchParams.has('INSTRUMENT'),false);
-   assert.deepEqual(parsed.searchParams.getAll('COLLECTION'),['spherex_qr3','spherex_qr3_deep']);
+   assert.equal(parsed.searchParams.get('INSTRUMENT'),'SPHEREx');
+   assert.equal(parsed.searchParams.has('COLLECTION'),false);
    assert.equal(parsed.searchParams.get('MAXREC'),'1000');
    assert.match(parsed.searchParams.get('POS'),/^CIRCLE /);
    assert.equal(parsed.searchParams.has('BAND'),false);
@@ -264,34 +264,34 @@ test('single-image rectangle action accepts any band and prefers the newest usab
  }finally{globalThis.fetch=original;}
 });
 
-test('single search explicitly scopes the documented QR3 wide and deep collections',async()=>{
+test('single search scopes only the SPHEREx instrument without a release list',async()=>{
  const original=globalThis.fetch,calls=[];
  const dr1=row('deep-image',61200);dr1[1]='spherex_qr3_deep';
  globalThis.fetch=async(url)=>{
    calls.push(new URL(url).searchParams.getAll('COLLECTION'));
-   assert.equal(new URL(url).searchParams.has('INSTRUMENT'),false);
+   assert.equal(new URL(url).searchParams.get('INSTRUMENT'),'SPHEREx');
    return {ok:true,status:200,json:async()=>payload([dr1])};
  };
  try{
    const {searchObservations}=require('../spherex-observations');
    const result=await searchObservations(regionFromCorners(rectangle),{mode:'single',log:()=>{}});
    assert.equal(result.selected.length,1);assert.equal(result.selected[0].obs_id,'deep-image');
-   assert.deepEqual(calls,[['spherex_qr3','spherex_qr3_deep']]);
+   assert.deepEqual(calls,[[]]);
  }finally{globalThis.fetch=original;}
 });
 
-test('single search falls back to DR1 wide/deep only after a valid QR3 response with no usable image',async()=>{
+test('single search accepts a newer observation from another release in the same request',async()=>{
  const original=globalThis.fetch,calls=[];
  globalThis.fetch=async url=>{
-   const collections=new URL(url).searchParams.getAll('COLLECTION');calls.push(collections);
-   const image=row('dr1-fallback',61200);image[1]='spherex_dr1';image[8]=image[8].replace('/qr3/','/dr1/');
-   return {ok:true,status:200,json:async()=>payload(calls.length===1?[]:[image])};
+   const params=new URL(url).searchParams;calls.push(params);
+   assert.equal(params.get('INSTRUMENT'),'SPHEREx');assert.equal(params.has('COLLECTION'),false);
+   const image=row('new-dr2',61301);image[1]='spherex_dr2';image[8]=image[8].replace('/qr3/','/dr2/');
+   return {ok:true,status:200,json:async()=>payload([row('older-qr3',61300),image])};
  };
  try{
    const {searchObservations}=require('../spherex-observations');
    const result=await searchObservations(regionFromCorners(rectangle),{mode:'single',log:()=>{}});
-   assert.equal(result.selected[0].obs_id,'dr1-fallback');
-   assert.deepEqual(calls,[['spherex_qr3','spherex_qr3_deep'],['spherex_dr1','spherex_dr1_deep']]);
+   assert.equal(result.selected[0].obs_id,'new-dr2');assert.equal(calls.length,1);
  }finally{globalThis.fetch=original;}
 });
 
@@ -317,12 +317,12 @@ test('earlier dates are strictly before the anchor UTC day, distinct, same band,
  assert.throws(()=>selectEarlierDates(payload([]),{...options,limit:11}),/between 1 and 10/);
 });
 
-test('history route searches the four documented collections before UTC midnight and reports capped results',async()=>{
+test('history route searches SPHEREx without a release list before UTC midnight and reports capped results',async()=>{
  const original=globalThis.fetch,calls=[];
  globalThis.fetch=async url=>{
    const parsed=new URL(url);calls.push(parsed);
-   assert.equal(parsed.searchParams.has('INSTRUMENT'),false);
-   assert.deepEqual(parsed.searchParams.getAll('COLLECTION'),['spherex_qr3','spherex_qr3_deep','spherex_dr1','spherex_dr1_deep']);
+   assert.equal(parsed.searchParams.get('INSTRUMENT'),'SPHEREx');
+   assert.equal(parsed.searchParams.has('COLLECTION'),false);
    assert.equal(parsed.searchParams.get('TIME'),'-Inf 61300');
    assert.equal(parsed.searchParams.get('MAXREC'),'1000');
    assert.match(parsed.searchParams.get('POS'),/^CIRCLE /);
@@ -359,12 +359,12 @@ test('invalid history filters are rejected before archive access',async()=>{
  }finally{globalThis.fetch=original;}
 });
 
-test('newer-date refresh scopes collection queries and accepts official release URLs with one exposure per UTC day',async()=>{
+test('newer-date refresh uses the SPHEREx instrument scope and one exposure per UTC day',async()=>{
  const original=globalThis.fetch;
  globalThis.fetch=async url=>{
    const parsed=new URL(url);
-   assert.equal(parsed.searchParams.has('INSTRUMENT'),false);
-   assert.deepEqual(parsed.searchParams.getAll('COLLECTION'),['spherex_qr3','spherex_qr3_deep','spherex_dr1','spherex_dr1_deep']);
+   assert.equal(parsed.searchParams.get('INSTRUMENT'),'SPHEREx');
+   assert.equal(parsed.searchParams.has('COLLECTION'),false);
    assert.equal(parsed.searchParams.get('TIME'),'61301 +Inf');
    const newer=row('new-dr2',61301);newer[1]='spherex_dr2';newer[8]=newer[8].replace('/qr3/','/dr2/');
    const later=row('new-qr4',61302);later[1]='spherex_qr4';later[8]=later[8].replace('/qr3/','/qr4/');

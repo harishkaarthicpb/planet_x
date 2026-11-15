@@ -1527,6 +1527,7 @@ async function readArchiveResponse(response, step) {
 async function loadEarlierObservations({newer=false}={}) {
   const state=pairState, selection=selectedPair;
   if (isAlternativeSurvey(currentMission) || regionMode!=='time' || !selectedRegion || !state?.ready || state.pending || state.historyPending || (!newer && state.historyExhausted) || switching) return false;
+  const previouslyLoaded=selection.observations.length;
   const anchor=newer?(state.newerAnchor || selection.observations.reduce((latest,exposure)=>
     Date.parse(exposure.observedStart)>Date.parse(latest.observedStart)?exposure:latest)):
     (state.historyAnchor || selection.observations[isObservation(currentMission)?observationIndex(currentMission):0]);
@@ -1597,8 +1598,8 @@ async function loadEarlierObservations({newer=false}={}) {
       state.historyAnchor=oldest;
       state.historyExhausted=!result.searchLimited && result.observations.length<10;
     }
-    const count=selection.observations.length-1;
-    preloadProgress.textContent=`${count} additional date${count===1?'':'s'} loaded · ${anchor.band} · checked ${newer?'after':'before'} ${anchor.observedStart.slice(0,10)} UTC`+
+    const count=selection.observations.length-previouslyLoaded;
+    preloadProgress.textContent=`${count} date${count===1?'':'s'} added this batch · ${selection.observations.length} total dates loaded · ${anchor.band} · checked ${newer?'after':'before'} ${anchor.observedStart.slice(0,10)} UTC`+
       (result.searchSummary?` · This search: ${result.searchSummary.matchingExposures} exposures across ${result.searchSummary.matchingDates} UTC dates.`:'')+
       (failures.length?(newer?` · ${failures.length} failed; retrying at the next daily check.`:` · ${failures.length} failed; use Retry earlier dates.`):'')+
       (!newer && state.historyExhausted?' · No earlier same-band dates remaining.':'')+

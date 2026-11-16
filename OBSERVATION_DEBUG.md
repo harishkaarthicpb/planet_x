@@ -220,10 +220,12 @@ within the viewport on small screens.
 ## Rectangle modes: Time or Infrared
 
 The region tool offers mutually exclusive Time and Infrared radio choices.
-Infrared accepts large rectangles (up to a padded angular diameter of 170° to
-stay within the TAN projection's hemisphere). Time keeps its 1° limit both in
-the browser and on the archive API. Switching a large infrared rectangle to
-Time explains that a smaller selection is needed and leaves its spectrum intact.
+Both modes accept large rectangles (up to a padded angular diameter of 170° to
+stay within the TAN projection's hemisphere), in the browser and on the archive
+APIs. Large infrared rectangles can switch directly to Time. Time still searches
+at the region center and displays individual exposures; a larger selection does
+not create a mosaic or add observations away from the center. Individual
+exposures may cover only a small part of a large region.
 Drawing a rectangle starts the chosen mode; changing modes on an existing
 rectangle keeps its geometry and replaces the active exploration. Time retains
 the dated-observation pipeline. Infrared cancels and removes dated FITS frames,

@@ -700,7 +700,7 @@ test('drawing in Infrared mode starts only the spectrum and leaving the region p
   }finally{browser.controller.stopSpectrum();}
 });
 
-test('large infrared rectangles play normally and cannot be sent to the Time archive',async()=>{
+test('large infrared rectangles can switch to Time with the same region and center search',async()=>{
   const browser=browserController({largeRectangle:true});await browser.controller.initializeSurvey(wavelengthSurvey());
   browser.controller.clearSelectedRegion();await browser.controller.chooseRegionMode('infrared');
   await browser.controller.startRegionSelection();
@@ -708,13 +708,16 @@ test('large infrared rectangles play normally and cannot be sent to the Time arc
   const state=browser.controller.spectrum();assert.ok(state);
   assert.ok(state.region.sizeDegrees>10);
   assert.equal(browser.element('spectrum-player').hidden,false);
-  assert.equal(await browser.controller.chooseRegionMode('time'),false);
-  assert.equal(browser.controller.regionMode(),'infrared');
-  assert.equal(browser.controller.spectrum(),state);
-  assert.equal(browser.element('region-mode-infrared').checked,true);
-  assert.match(browser.element('region-result').textContent,/Time mode needs a region within 1°/);
-  assert.equal(browser.requests.length,0);
-  assert.equal(browser.controller.selectSpectrumChannel(80),true);
+  const camera=browser.camera();
+  assert.equal(await browser.controller.chooseRegionMode('time'),true);
+  assert.equal(browser.controller.regionMode(),'time');
+  assert.equal(browser.controller.state().region,state.region);
+  assert.equal(browser.element('region-mode-time').checked,true);
+  const query=new URL(browser.requests.find(url=>url.includes('/api/spherex/observations?')),'http://localhost');
+  assert.equal(query.searchParams.get('mode'),'single');
+  assert.deepEqual(JSON.parse(query.searchParams.get('corners')),JSON.parse(JSON.stringify(state.region.corners)));
+  assert.deepEqual(browser.camera(),camera);
+  assert.equal(browser.controller.state().ready,true);
 });
 
 test('a release discovered during a spectrum is applied after returning to the whole sky',async()=>{

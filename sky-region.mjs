@@ -22,7 +22,7 @@ function contains(polygon, points) {
   });
 }
 
-export function regionFromCorners(corners, {maxSizeDegrees=1}={}) {
+export function regionFromCorners(corners, {maxSizeDegrees=170}={}) {
   if(!Number.isFinite(maxSizeDegrees) || maxSizeDegrees<=0 || maxSizeDegrees>170){
     throw new Error('The region size limit must be between 0° and 170°.');
   }
@@ -35,7 +35,7 @@ export function regionFromCorners(corners, {maxSizeDegrees=1}={}) {
   const center = normalize(vectors.reduce((sum, v) => sum.map((n, i) => n + v[i]), [0, 0, 0]));
   const radius = Math.max(...vectors.map(v => Math.atan2(Math.hypot(...cross(center, v)), dot(center, v)) / RAD));
   // A padded diameter bounds the corners. The viewer refits their projected
-  // positions, including distortion in large infrared regions.
+  // positions, including distortion in large regions in either viewer.
   const sizeDegrees = Math.max(0.02, 2 * radius * 1.05);
   if (!Number.isFinite(sizeDegrees) || sizeDegrees > maxSizeDegrees) {
     throw new Error(`Zoom in and draw a smaller rectangle; the region must fit within ${maxSizeDegrees}°.`);

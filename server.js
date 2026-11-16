@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { handleObservationRequest } = require('./spherex-observations');
 const { handleReleaseRequest } = require('./spherex-releases');
+const { handleObjectRequest } = require('./object-lookup');
 
 const port = Number(process.env.PORT ?? 8000);
 const routes = {
@@ -16,9 +17,11 @@ const routes = {
   '/spectrum-buffer.mjs': ['spectrum-buffer.mjs', 'text/javascript; charset=utf-8'],
   '/hips-cube-tiles.mjs': ['hips-cube-tiles.mjs', 'text/javascript; charset=utf-8'],
   '/survey-dates.mjs': ['survey-dates.mjs', 'text/javascript; charset=utf-8'],
+  '/object-inspector.mjs': ['object-inspector.mjs', 'text/javascript; charset=utf-8'],
 };
 
 const server = http.createServer(async (request, response) => {
+  if (await handleObjectRequest(request, response)) return;
   if (await handleReleaseRequest(request, response)) return;
   if (await handleObservationRequest(request, response)) return;
   if (request.method !== 'GET' && request.method !== 'HEAD') {

@@ -49,19 +49,40 @@ test('rectangle conversion uses all four corners and handles RA wraparound', () 
 
 test('invalid, oversized, degenerate and off-projection rectangles are rejected', () => {
   assert.throws(() => regionFromRectangle({x:0,y:0,w:1,h:10}, () => [0,0]), /5 pixels/);
-  assert.throws(() => regionFromCorners([[0,0],[10,0],[10,10],[0,10]]), /smaller/);
+  assert.throws(() => regionFromCorners([[0,-85],[170,-85],[170,85],[0,85]]), /smaller/);
   assert.throws(() => regionFromCorners([[0,0],[0,0],[0,0],[0,0]]), /non-zero/);
   assert.throws(() => regionFromRectangle({x:0,y:0,w:10,h:10}, () => null), /valid ICRS/);
   assert.throws(() => regionFromCorners([[0,0],[NaN,0],[0,.1],[.1,.1]]), /valid ICRS/);
 });
 
-test('infrared allows wide rectangles across RA wrap while time keeps its one-degree limit',()=>{
+test('both viewers allow wide rectangles across RA wrap and retain configurable projection bounds',()=>{
   const corners=[[330,-30],[30,-30],[30,30],[330,30]];
   const region=regionFromCorners(corners,{maxSizeDegrees:170});
   assert.ok(region.sizeDegrees>80 && region.sizeDegrees<90);
   assert.ok(Math.min(region.position.ra,360-region.position.ra)<1e-8);
-  assert.throws(()=>regionFromCorners(corners),/within 1°/);
+  assert.deepEqual(regionFromCorners(corners),region);
+  assert.throws(()=>regionFromCorners(corners,{maxSizeDegrees:1}),/within 1°/);
   assert.throws(()=>regionFromCorners(corners,{maxSizeDegrees:180}),/170°/);
+});
+
+test('Time API accepts a large selection while retaining the tiny center search and partial exposure coverage',async()=>{
+  const originalFetch=globalThis.fetch;
+  const corners=[[55,45],[65,45],[65,55],[55,55]];
+  const region=regionFromCorners(corners);
+  let search;
+  globalThis.fetch=async url=>{
+    search=new URL(url);
+    return {ok:true,status:200,json:async()=>payload([row('large-region',61290)])};
+  };
+  try{
+    const query=new URLSearchParams({corners:JSON.stringify(corners),mode:'single'}),res=response();
+    await handleObservationRequest({method:'GET',url:`/api/spherex/observations?${query}`},res);
+    assert.equal(res.status,200);
+    const result=JSON.parse(res.body);
+    assert.ok(result.cutoutSizeDegrees>10);assert.equal(result.cutoutSizeDegrees,region.sizeDegrees);
+    assert.equal(search.searchParams.get('POS'),`CIRCLE ${region.position.ra} ${region.position.dec} 0.0001`);
+    assert.equal(result.observations.length,1);assert.equal(result.observations[0].coverage,'partial-or-unknown');
+  }finally{globalThis.fetch=originalFetch;}
 });
 
 test('spherical footprint containment handles either winding, RA wrap and poles', () => {

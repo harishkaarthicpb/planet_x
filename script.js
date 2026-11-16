@@ -3,6 +3,7 @@ import { sampleFitsPreview } from './fits-preview.mjs';
 import { observeSurveyTiles, waitForSurveyTiles, spectrumFrameSize, captureSpectrumFrame, captureBlankSpectrumFrame, bufferSpectrumFrames, disposeSpectrumFrames, paintSpectrumFrame } from './spectrum-buffer.mjs';
 import { registerCubeTileRoot, blankCubeChannels } from './hips-cube-tiles.mjs';
 import { surveyDates, compareSurveyDates } from './survey-dates.mjs';
+import { createObjectInspector, surveyEpoch } from './object-inspector.mjs';
 
 // Pinned Aladin 3.8.2 with its SIP polynomial evaluator corrected locally.
 // See vendor/README.md for the reproduction and dependency patch.
@@ -113,6 +114,7 @@ const markerToggle = document.getElementById('marker-toggle');
 let selectedPair = null;
 let comparisonMap = null;
 let comparisonActive = false;
+let objectInspector = null;
 const regionView = document.getElementById('region-view');
 const regionMapElement = document.getElementById('region-map');
 const backToSkyButton = document.getElementById('back-to-sky');
@@ -541,8 +543,8 @@ async function prepareSelectedSpectrum(state) {
 async function chooseRegionMode(mode) {
   if(!['time','infrared'].includes(mode) || switching || pairState?.pending || pairState?.historyPending)return false;
   if(mode===regionMode)return true;
-  if(mode==='time' && selectedRegion?.sizeDegrees>1){
-    regionResult.textContent='Time mode needs a region within 1°. Clear this infrared region, zoom in, and draw a smaller rectangle.';
+  if(mode==='time' && selectedRegion?.sizeDegrees>170){
+    regionResult.textContent='The region must fit within 170°. Zoom in and draw a smaller rectangle.';
     updateMissionControls();return false;
   }
   discardSpectrum();discardPreparedObservations();regionMode=mode;
@@ -953,6 +955,7 @@ function syncObservationButtons() {
 }
 
 function updateMissionControls() {
+  objectInspector?.reset();
   document.body.classList.toggle('gaia-view',currentMission==='gaia');
   document.body.classList.toggle('dss2-view',currentMission==='dss2');
   document.body.classList.toggle('wise-view',currentMission==='wise');
@@ -1185,6 +1188,7 @@ function leaveComparison() {
 
 async function enterComparison() {
   if (!selectedRegion) return;
+  objectInspector?.close();
   if (comparisonActive && comparisonMap) return;
   const region = selectedRegion;
   regionView.hidden = false;
@@ -1362,7 +1366,7 @@ function updateRegionControls() {
   drawRegionButton.textContent = drawingRegion ? 'Cancel drawing' : 'Draw rectangle';
   drawRegionButton.setAttribute('aria-pressed', String(drawingRegion));
   clearRegionButton.hidden = !selectedRegion;
-  loadObservationButton.disabled = !selectedRegion || selectedRegion.sizeDegrees>1 || drawingRegion || switching || !!pairState?.pending || !!pairState?.historyPending;
+  loadObservationButton.disabled = !selectedRegion || selectedRegion.sizeDegrees>170 || drawingRegion || switching || !!pairState?.pending || !!pairState?.historyPending;
   loadObservationButton.textContent = pairState?.pending ? 'Loading observation…' : 'Load one observation';
   loadObservationButton.hidden=regionMode!=='time';
   loadSpectrumButton.hidden=regionMode!=='infrared';
@@ -1375,7 +1379,7 @@ function updateRegionControls() {
 
 function regionSelectionHint() {
   return regionMode==='infrared'?'Drag a rectangle to explore its infrared spectrum. Large sky regions are supported.':
-    'Zoom in, then drag a rectangle that fits within 1° for Time mode.';
+    'Drag a rectangle to explore dated observations. Large sky regions are supported.';
 }
 
 function clearSelectedRegion() {
@@ -1396,6 +1400,7 @@ function clearSelectedRegion() {
 
 async function startRegionSelection() {
   if (!skyMap || switching || isAlternativeSurvey(currentMission)) return;
+  objectInspector?.close();
   if (drawingRegion) { clearSelectedRegion(); return; }
   clearSelectedRegion();
   const sequence = ++selectionSequence;
@@ -1409,7 +1414,7 @@ async function startRegionSelection() {
       setTimeout(() => skyMap.showReticle(false), 0);
       try {
         selectedRegion = {
-          ...regionFromRectangle(rect, (...args) => skyMap.pix2world(...args),{maxSizeDegrees:regionMode==='infrared'?170:1}),
+          ...regionFromRectangle(rect, (...args) => skyMap.pix2world(...args),{maxSizeDegrees:170}),
           aspect: rect.w / rect.h, rotation: skyMap.getRotation()
         };
         if (!regionOverlay) {
@@ -1439,7 +1444,7 @@ async function startRegionSelection() {
 }
 
 async function loadSelectedObservations() {
-  if (isAlternativeSurvey(currentMission) || regionMode!=='time' || !selectedRegion || selectedRegion.sizeDegrees>1 || drawingRegion || switching || pairState?.pending) return false;
+  if (isAlternativeSurvey(currentMission) || regionMode!=='time' || !selectedRegion || selectedRegion.sizeDegrees>170 || drawingRegion || switching || pairState?.pending) return false;
   const region = selectedRegion;
   await enterComparison();
   if (selectedRegion !== region || !comparisonActive) return false;
@@ -1789,6 +1794,9 @@ async function loadSky() {
     });
     skyMap.setFoVRange(1 / 36000, 110);
     skyMap.on('mouseMove', updateCursorCoordinates);
+    objectInspector=createObjectInspector({map:skyMap,element:document.getElementById('sky-map'),document,
+      getEpoch:()=>surveyEpoch(metadata.get('spherex')),
+      isEnabled:()=>currentMission==='spherex' && !comparisonActive && !drawingRegion && !switching});
     document.getElementById('sky-map').addEventListener('mouseleave', clearCursorCoordinates);
     coordinateFields.disabled = false;
     await switchMission('spherex');

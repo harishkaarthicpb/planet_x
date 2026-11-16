@@ -18,6 +18,8 @@ const routes = {
   '/hips-cube-tiles.mjs': ['hips-cube-tiles.mjs', 'text/javascript; charset=utf-8'],
   '/survey-dates.mjs': ['survey-dates.mjs', 'text/javascript; charset=utf-8'],
   '/object-inspector.mjs': ['object-inspector.mjs', 'text/javascript; charset=utf-8'],
+  '/quick-tour.mjs': ['quick-tour.mjs', 'text/javascript; charset=utf-8'],
+  '/quick-tour.css': ['quick-tour.css', 'text/css; charset=utf-8'],
 };
 
 const server = http.createServer(async (request, response) => {

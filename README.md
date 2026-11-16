@@ -14,13 +14,42 @@ Click here to launch Planet X
 
 This is the easiest way to experience the application. No installation is required.
 
-2. 📦 Downloadable Version (Backup)
+### 2. 📦 Downloadable Version (Backup)
 
-If the website is unavailable or doesn't work as expected, a downloadable version of the project is also available.
+If the website is unavailable or doesn't work as expected, you can download Planet X and run it locally on your computer.
 
-Download Planet X
+**Download Planet X (ZIP):** [⬇️ Download Planet X (ZIP)](https://github.com/harishkaarthicpb/planet_x/archive/refs/heads/main.zip)
 
-[Add any installation or launch instructions required for the downloadable version.]
+#### 🛠️ How to Run Planet X
+
+**Step 1:** Install [Node.js LTS](https://nodejs.org/) if you don't already have it installed.
+
+**Step 2:** Download the Planet X ZIP file using the link above.
+
+**Step 3:** Extract the downloaded ZIP file.
+
+**Step 4:** Open Terminal (macOS/Linux) or Command Prompt (Windows) inside the extracted `planet_x-main` folder.
+
+**Step 5:** Run the following command:
+
+```bash
+npm start
+```
+
+**Step 6:** Keep the terminal open. Once the server starts, open your browser and visit:
+
+**http://localhost:8000**
+
+Planet X should now be running locally on your computer!
+
+#### ⚠️ Important Notes
+
+- **An internet connection is required** to retrieve astronomical data from external archives.
+- Keep the terminal open while using Planet X.
+- To stop the application, press **Ctrl + C** in the terminal.
+- If the application doesn't load immediately, check the terminal for errors.
+
+No Android Studio or additional development software is required beyond Node.js.
 
 3. 💻 Run Locally (Final Backup)
 
